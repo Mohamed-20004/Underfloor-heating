@@ -99,20 +99,65 @@ function clear(layer) { layer.innerHTML = ''; }
 
 function drawBackground() {
   clear(layers.background);
-  // A subtle grid every 1 m.
-  const gridSpacing = 1000;
+  const minor = 1000;          // 1 m — the user-facing "1 sq m" grid
+  const major = 5000;          // 5 m — emphasised every fifth line
   const w = canvas.clientWidth || 1200;
   const h = canvas.clientHeight || 800;
   const z = state.view.zoom;
   const vbW = w / z, vbH = h / z;
   const vbX = -state.view.panX / z, vbY = -state.view.panY / z;
-  const startX = Math.floor(vbX / gridSpacing) * gridSpacing;
-  const startY = Math.floor(vbY / gridSpacing) * gridSpacing;
-  for (let x = startX; x < vbX + vbW; x += gridSpacing) {
-    svg('line', { x1: x, y1: vbY, x2: x, y2: vbY + vbH, stroke: '#e8eaee', 'stroke-width': 10 }, layers.background);
+
+  // Hide the grid below a tiny zoom threshold to avoid drawing thousands of
+  // lines when the user zooms way out.
+  if (z < 0.005) return;
+
+  const startX = Math.floor(vbX / minor) * minor;
+  const startY = Math.floor(vbY / minor) * minor;
+
+  // Minor grid: every 1 m. Stroke width is in world units (mm), so we scale
+  // it inverse to zoom to keep it ~1 px on screen regardless of zoom level.
+  const minorStroke = Math.max(2, 1 / z);
+  const majorStroke = Math.max(6, 3 / z);
+
+  for (let x = startX; x < vbX + vbW; x += minor) {
+    const isMajor = Math.round(x / minor) % (major / minor) === 0;
+    svg('line', {
+      x1: x, y1: vbY, x2: x, y2: vbY + vbH,
+      stroke: isMajor ? '#cdd2da' : '#e3e6eb',
+      'stroke-width': isMajor ? majorStroke : minorStroke,
+    }, layers.background);
   }
-  for (let y = startY; y < vbY + vbH; y += gridSpacing) {
-    svg('line', { x1: vbX, y1: y, x2: vbX + vbW, y2: y, stroke: '#e8eaee', 'stroke-width': 10 }, layers.background);
+  for (let y = startY; y < vbY + vbH; y += minor) {
+    const isMajor = Math.round(y / minor) % (major / minor) === 0;
+    svg('line', {
+      x1: vbX, y1: y, x2: vbX + vbW, y2: y,
+      stroke: isMajor ? '#cdd2da' : '#e3e6eb',
+      'stroke-width': isMajor ? majorStroke : minorStroke,
+    }, layers.background);
+  }
+
+  // Metre coordinate labels along the major grid. Skip when too zoomed out
+  // (labels would overlap) or too zoomed in (labels would be huge).
+  if (z > 0.02 && z < 0.5) {
+    const fontSize = Math.max(80, 12 / z);
+    const padding = 8 / z;
+    for (let x = Math.ceil(vbX / major) * major; x < vbX + vbW; x += major) {
+      svg('text', {
+        x, y: vbY + fontSize + padding,
+        'font-size': fontSize,
+        fill: '#a8aebc',
+        'text-anchor': 'middle',
+        'font-family': '-apple-system, sans-serif',
+      }, layers.background).textContent = `${x / 1000} m`;
+    }
+    for (let y = Math.ceil(vbY / major) * major; y < vbY + vbH; y += major) {
+      svg('text', {
+        x: vbX + padding, y: y - padding / 2,
+        'font-size': fontSize,
+        fill: '#a8aebc',
+        'font-family': '-apple-system, sans-serif',
+      }, layers.background).textContent = `${y / 1000} m`;
+    }
   }
 }
 
