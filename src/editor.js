@@ -17,6 +17,10 @@ let customVerts = null;
 let imageDrag = null;
 // Free-wall drawing buffer: the first tapped point waiting for a second tap.
 let wallStart = null;
+// Active pointers (by pointerId) and the gesture base when 2 fingers are
+// down. Two pointers always take precedence over single-pointer tool actions.
+const pointers = new Map();
+let gestureStart = null;
 
 export function initEditor(canvasEl, opts = {}) {
   canvas = canvasEl;
@@ -84,7 +88,33 @@ function nearestFreeWall(p, tolerance) {
 
 function snap(v, grid = 50) { return Math.round(v / grid) * grid; }
 
+function beginGesture() {
+  const pts = [...pointers.values()].slice(0, 2);
+  const cx = (pts[0].x + pts[1].x) / 2;
+  const cy = (pts[0].y + pts[1].y) / 2;
+  const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  // Pre-compute the world point under the gesture centre so we can keep it
+  // anchored throughout the pinch (so the canvas tracks your fingers).
+  const w = clientToWorld(cx, cy);
+  gestureStart = { cx, cy, dist: d, zoom: state.view.zoom, worldX: w.x, worldY: w.y };
+}
+
+function cancelSinglePointerActions() {
+  dragStart = null; dragEnd = null;
+  panStart = null;
+  imageDrag = null;
+  clearPreview();
+}
+
 function onPointerDown(e) {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  // If a second finger lands while a tool action is mid-gesture, abandon the
+  // tool action and start a pinch/pan gesture instead.
+  if (pointers.size >= 2) {
+    cancelSinglePointerActions();
+    beginGesture();
+    return;
+  }
   if (e.button === 1 || (e.button === 0 && e.shiftKey) || e.button === 2) {
     panStart = { x: e.clientX, y: e.clientY, panX: state.view.panX, panY: state.view.panY };
     canvas.setPointerCapture(e.pointerId);
@@ -254,6 +284,27 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
+  if (pointers.has(e.pointerId)) {
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  }
+  // Two-finger gesture: pinch to zoom + drag to pan, with the gesture centre
+  // staying anchored to the same world point (so the canvas feels like paper
+  // under your fingers).
+  if (pointers.size >= 2 && gestureStart) {
+    const pts = [...pointers.values()].slice(0, 2);
+    const cx = (pts[0].x + pts[1].x) / 2;
+    const cy = (pts[0].y + pts[1].y) / 2;
+    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    const scale = d / Math.max(1, gestureStart.dist);
+    const newZoom = Math.max(0.005, Math.min(2.0, gestureStart.zoom * scale));
+    state.view.zoom = newZoom;
+    state.view.panX = cx - gestureStart.worldX * newZoom;
+    state.view.panY = cy - gestureStart.worldY * newZoom;
+    applyView();
+    emit();
+    return;
+  }
+
   const wp = clientToWorld(e.clientX, e.clientY);
   onStatus(`x: ${(wp.x / 1000).toFixed(2)} m  y: ${(wp.y / 1000).toFixed(2)} m  |  mode: ${state.mode}`, true);
 
@@ -296,6 +347,8 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) gestureStart = null;
   if (panStart) {
     panStart = null;
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}

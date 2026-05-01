@@ -179,6 +179,9 @@ body {
   cursor: default;
   min-height: 0;
   user-select: none;
+  /* Disable native touch scroll/zoom so two-finger pan and pinch fall through
+     to our pointer handlers in the editor. */
+  touch-action: none;
 }
 #canvas.draw-mode { cursor: crosshair; }
 #canvas.delete-mode { cursor: not-allowed; }
