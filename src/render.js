@@ -199,29 +199,71 @@ function drawFreeWalls() {
   const walls = state.walls || [];
   for (const w of walls) {
     const cls = w.kind === 'external' ? 'wall external' : 'wall internal';
-    svg('line', {
-      x1: w.a.x, y1: w.a.y, x2: w.b.x, y2: w.b.y,
-      class: cls,
-      'data-free-wall-id': w.id,
-    }, layers['free-walls']);
-    // Length label (centred + offset perpendicular).
     const dx = w.b.x - w.a.x, dy = w.b.y - w.a.y;
     const len = Math.hypot(dx, dy);
-    if (len < 600) continue;
-    const mx = (w.a.x + w.b.x) / 2, my = (w.a.y + w.b.y) / 2;
-    const nx = -dy / len, ny = dx / len;
-    const off = 220;
-    const isVertical = Math.abs(dx) < 1;
-    const tx = mx + nx * off, ty = my + ny * off;
-    const rotation = isVertical ? `rotate(-90 ${tx} ${ty})` : '';
-    svg('text', {
-      x: tx, y: ty + 35,
-      class: 'wall-length',
-      'font-size': 95,
-      'text-anchor': 'middle',
-      transform: rotation,
-    }, layers['free-walls']).textContent = `${(len / 1000).toFixed(2)} m`;
+    const seg = { a: w.a, b: w.b, length: len };
+    const doors = (w.doors || []);
+    const subSegs = breakWallByDoors(seg, doors);
+    for (const sub of subSegs) {
+      svg('line', {
+        x1: sub.a.x, y1: sub.a.y, x2: sub.b.x, y2: sub.b.y,
+        class: cls,
+        'data-free-wall-id': w.id,
+      }, layers['free-walls']);
+    }
+    // Length label centred and offset perpendicular to the wall.
+    if (len >= 600) {
+      const mx = (w.a.x + w.b.x) / 2, my = (w.a.y + w.b.y) / 2;
+      const nx = -dy / len, ny = dx / len;
+      const off = 220;
+      const isVertical = Math.abs(dx) < 1;
+      const tx = mx + nx * off, ty = my + ny * off;
+      const rotation = isVertical ? `rotate(-90 ${tx} ${ty})` : '';
+      svg('text', {
+        x: tx, y: ty + 35,
+        class: 'wall-length',
+        'font-size': 95,
+        'text-anchor': 'middle',
+        transform: rotation,
+      }, layers['free-walls']).textContent = `${(len / 1000).toFixed(2)} m`;
+    }
+    // Door leaves and click targets for each door on this wall.
+    for (const d of doors) drawFreeWallDoor(w, d);
   }
+}
+
+function drawFreeWallDoor(wall, d) {
+  const a = wall.a, b = wall.b;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  // Free walls don't have an "inside" — pick the right-hand perpendicular as
+  // the swing side. The user can flip the wall's own kind via the sidebar
+  // but the door always swings to a consistent side here.
+  const ix = -uy, iy = ux;
+  const w = d.width;
+  const cx = a.x + ux * len * d.center;
+  const cy = a.y + uy * len * d.center;
+  const half = w / 2;
+  const post1 = { x: cx - ux * half, y: cy - uy * half };
+  const post2 = { x: cx + ux * half, y: cy + uy * half };
+  const swingTarget = { x: post2.x + ix * w, y: post2.y + iy * w };
+  svg('line', {
+    x1: post2.x, y1: post2.y, x2: swingTarget.x, y2: swingTarget.y,
+    class: 'door-leaf',
+  }, layers['free-walls']);
+  svg('path', {
+    d: `M ${post1.x} ${post1.y} A ${w} ${w} 0 0 1 ${swingTarget.x} ${swingTarget.y}`,
+    class: 'door-arc',
+  }, layers['free-walls']);
+  // Touch hit target — carries both freeWallId and doorId so the Delete tool
+  // and the Select tool's drag/select can route correctly.
+  svg('rect', {
+    x: cx - half, y: cy - half, width: w, height: w,
+    fill: 'transparent', stroke: 'transparent',
+    'data-free-wall-id': wall.id,
+    'data-door-id': d.id,
+  }, layers['free-walls']);
 }
 
 function drawRooms() {

@@ -2,9 +2,9 @@
 // mode-specific actions to the state module. Pan/zoom is built in.
 
 import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
-  addDoor, deleteDoor, addFreeWall, deleteFreeWall, selectRoom, clearSelection,
-  setManifold, toggleWall, emit, updateTracingImage, moveRoomBy, moveFreeWallBy,
-  setDoorCenter } from './state.js';
+  addDoor, deleteDoor, addFreeWall, deleteFreeWall, addFreeWallDoor, deleteFreeWallDoor,
+  selectRoom, clearSelection, setManifold, toggleWall, emit, updateTracingImage,
+  moveRoomBy, moveFreeWallBy, setDoorCenter } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -99,6 +99,7 @@ function doorAt(target) {
 }
 
 // Find the nearest polygon edge across all rooms within `tolerance` mm.
+// Returns { roomId, edgeIndex, distance } or null.
 function nearestRoomEdge(p, tolerance) {
   let best = null, bestDist = tolerance;
   for (const r of state.rooms) {
@@ -106,7 +107,7 @@ function nearestRoomEdge(p, tolerance) {
     for (let i = 0; i < vs.length; i++) {
       const a = vs[i], b = vs[(i + 1) % vs.length];
       const d = pointSegDist(p, a.x, a.y, b.x, b.y);
-      if (d < bestDist) { bestDist = d; best = { roomId: r.id, edgeIndex: i }; }
+      if (d < bestDist) { bestDist = d; best = { roomId: r.id, edgeIndex: i, distance: d }; }
     }
   }
   return best;
@@ -229,13 +230,37 @@ function onPointerDown(e) {
       break;
     }
     case 'add-door': {
-      // Pick the closest wall edge of the closest room and place a door there.
-      const room = roomNearest(wp, 1000);
-      if (!room) { onStatus('Tap on a room edge to place a door.'); break; }
-      const placement = nearestEdgeOnRoom(room, wp);
-      if (!placement) break;
-      addDoor(room.id, placement.edgeIndex, placement.center, 800);
-      onStatus(`Added door on ${room.name} (edge ${placement.edgeIndex}).`);
+      // Pick the closest wall — free wall or room polygon edge — and place a
+      // door there. Doors attach to whichever surface is nearest the tap.
+      const tol = 1000;
+      const fw = nearestFreeWall(wp, tol);
+      const fwDist = fw ? pointSegDist(wp, fw.a.x, fw.a.y, fw.b.x, fw.b.y) : Infinity;
+      const re = nearestRoomEdge(wp, tol);
+      const reDist = re ? re.distance : Infinity;
+      if (fw && fwDist <= reDist) {
+        // Project the click onto the free wall to compute the fractional centre.
+        const dx = fw.b.x - fw.a.x, dy = fw.b.y - fw.a.y;
+        const lenSq = dx * dx + dy * dy || 1;
+        const t = ((wp.x - fw.a.x) * dx + (wp.y - fw.a.y) * dy) / lenSq;
+        addFreeWallDoor(fw.id, t, 800);
+        onStatus('Added door on free wall.');
+        break;
+      }
+      if (re) {
+        const room = state.rooms.find(r => r.id === re.roomId);
+        if (!room) break;
+        // Compute the fractional centre along the polygon edge.
+        const a = room.vertices[re.edgeIndex];
+        const b = room.vertices[(re.edgeIndex + 1) % room.vertices.length];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const lenSq = dx * dx + dy * dy || 1;
+        const t = ((wp.x - a.x) * dx + (wp.y - a.y) * dy) / lenSq;
+        const center = Math.max(0.05, Math.min(0.95, t));
+        addDoor(re.roomId, re.edgeIndex, center, 800);
+        onStatus(`Added door on ${room.name}.`);
+        break;
+      }
+      onStatus('Tap on a wall (room edge or free wall) to place a door.');
       break;
     }
     case 'merge-walls': {
@@ -274,8 +299,14 @@ function onPointerDown(e) {
           break;
         }
         if (target.dataset.doorId) {
-          deleteDoor(target.dataset.roomId, target.dataset.doorId);
-          onStatus('Removed door.');
+          // Door delete: free-wall doors carry a freeWallId, room doors carry a roomId.
+          if (target.dataset.freeWallId) {
+            deleteFreeWallDoor(target.dataset.freeWallId, target.dataset.doorId);
+            onStatus('Removed door.');
+          } else {
+            deleteDoor(target.dataset.roomId, target.dataset.doorId);
+            onStatus('Removed door.');
+          }
           break;
         }
         if (target.dataset.nogoId) {

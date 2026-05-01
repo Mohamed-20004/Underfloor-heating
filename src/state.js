@@ -315,6 +315,7 @@ export function addFreeWall(a, b, kind = 'internal') {
     a: { x: Math.round(a.x), y: Math.round(a.y) },
     b: { x: Math.round(b.x), y: Math.round(b.y) },
     kind,
+    doors: [],
   };
   state.walls.push(w);
   emit();
@@ -327,6 +328,31 @@ export function deleteFreeWall(id) {
   if (idx < 0) return;
   pushUndo();
   state.walls.splice(idx, 1);
+  emit();
+}
+
+// Doors attached to a free wall. The wall's `doors` array holds the same
+// shape as room doors (id, center, width) but without the edgeIndex field.
+export function addFreeWallDoor(wallId, center, width = 800) {
+  const w = (state.walls || []).find(w => w.id === wallId);
+  if (!w) return null;
+  if (!Array.isArray(w.doors)) w.doors = [];
+  pushUndo();
+  const door = {
+    id: newId('door'),
+    center: Math.max(0.05, Math.min(0.95, center)),
+    width,
+  };
+  w.doors.push(door);
+  emit();
+  return door;
+}
+
+export function deleteFreeWallDoor(wallId, doorId) {
+  const w = (state.walls || []).find(w => w.id === wallId);
+  if (!w || !Array.isArray(w.doors)) return;
+  pushUndo();
+  w.doors = w.doors.filter(d => d.id !== doorId);
   emit();
 }
 
