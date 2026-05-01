@@ -1,7 +1,8 @@
 // Headless smoke test for the engine layers (geometry, patterns, loops, calc).
 // Avoids any DOM-dependent module.
 
-import { state, loadSample, addCustomRoom, setManifold, clearAll } from '../src/state.js';
+import { state, loadSample, addCustomRoom, addFreeWall, addFreeWallDoor,
+  setManifold, clearAll } from '../src/state.js';
 import { generateRoomPath } from '../src/patterns.js';
 import { generateLoops } from '../src/loops.js';
 import { summarise } from '../src/calc.js';
@@ -135,6 +136,26 @@ assert(polylineLength(lPath) > 50000, `L-shape path is meaningful (>50 m of pipe
 setManifold({ x: 5000, y: 0 });
 const lLoops = generateLoops(state);
 assert(lLoops.loops.length >= 1, `L-shape produces at least one loop (got ${lLoops.loops.length})`);
+
+console.log('# Free wall blocks pipe rows (with a door letting one row through)');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+const room = addCustomRoom([
+  { x: 0, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 4000 }, { x: 0, y: 4000 },
+]);
+setManifold({ x: 0, y: 0 });
+// Baseline pipe length without any wall.
+const lenBaseline = polylineLength(generateRoomPath(room, state.config, []));
+// Now drop a vertical free wall straight through the middle of the room.
+const w = addFreeWall({ x: 3000, y: 500 }, { x: 3000, y: 3500 });
+const lenWithWall = polylineLength(generateRoomPath(room, state.config, state.walls));
+assert(lenWithWall < lenBaseline, `path is shorter once a wall blocks rows (${(lenBaseline/1000).toFixed(1)} m → ${(lenWithWall/1000).toFixed(1)} m)`);
+// A door in the wall should let some pipe back through.
+addFreeWallDoor(w.id, 0.5, 1200);
+const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
+assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
 
 if (failures === 0) {
   console.log(`\nAll smoke tests passed (${failures} failures).`);

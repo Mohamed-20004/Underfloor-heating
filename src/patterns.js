@@ -14,11 +14,26 @@ import {
   eps,
 } from './geometry.js';
 
-export function generateRoomPath(room, config) {
+export function generateRoomPath(room, config, walls = []) {
   const pattern = room.pattern || 'serpentine';
-  if (pattern === 'bifilar') return generateBifilar(room, config);
-  if (pattern === 'hybrid') return generateHybrid(room, config);
-  return generateSerpentine(room, config);
+  // Filter walls to those whose bounding box overlaps the room's bbox so the
+  // wall-clip step has fewer candidates per row.
+  const relevant = filterRelevantWalls(room, walls || []);
+  if (pattern === 'bifilar') return generateBifilar(room, config, relevant);
+  if (pattern === 'hybrid') return generateHybrid(room, config, relevant);
+  return generateSerpentine(room, config, relevant);
+}
+
+function filterRelevantWalls(room, walls) {
+  if (!walls.length) return [];
+  const b = bbox(room.vertices || []);
+  const margin = 100; // millimetres of slop
+  return walls.filter(w => {
+    const wxMin = Math.min(w.a.x, w.b.x), wxMax = Math.max(w.a.x, w.b.x);
+    const wyMin = Math.min(w.a.y, w.b.y), wyMax = Math.max(w.a.y, w.b.y);
+    return !(wxMax + margin < b.x || wxMin - margin > b.x + b.w ||
+             wyMax + margin < b.y || wyMin - margin > b.y + b.h);
+  });
 }
 
 // True if the polygon is an axis-aligned 4-vertex rectangle. Used to opt the
@@ -54,7 +69,7 @@ function setbacksForRoom(room, wallSetback) {
 // Serpentine (meander) — works on any axis-aligned polygon.
 // -----------------------------------------------------------------------------
 
-function generateSerpentine(room, config) {
+function generateSerpentine(room, config, walls = []) {
   const { wallSetback, edgeSpacing, pipeSpacing, edgeZoneWidth } = config;
   const ext = longestExternalWall(room);
   if (!ext) return [];
@@ -108,14 +123,18 @@ function generateSerpentine(room, config) {
       .filter(([lo, hi]) => hi - lo > 1);
     if (!inset.length) continue;
 
-    // Subtract no-go zones from every candidate sub-segment, then choose the
-    // longest available segment.
+    // Subtract no-go zones, then any walls (free walls act as obstacles —
+    // pipes route around them, with door openings letting pipes through).
+    // Pick the longest surviving sub-segment.
     const candidates = [];
     for (const [lo, hi] of inset) {
       const a = horizontalSpine ? { x: lo, y: pos } : { x: pos, y: lo };
       const c = horizontalSpine ? { x: hi, y: pos } : { x: pos, y: hi };
-      const subs = subtractNoGo(a, c, horizontalSpine, room.noGoZones || []);
-      candidates.push(...subs);
+      const noGoSubs = subtractNoGo(a, c, horizontalSpine, room.noGoZones || []);
+      for (const seg of noGoSubs) {
+        const wallSubs = subtractWalls(seg.a, seg.b, horizontalSpine, walls, wallSetback);
+        candidates.push(...wallSubs);
+      }
     }
     if (!candidates.length) continue;
     let best = candidates[0], bestLen = segLen(best);
@@ -183,13 +202,86 @@ function subtractNoGo(a, b, horizontal, noGo) {
     }));
 }
 
+// Subtract axis-aligned walls from a row segment. Each wall blocks rows that
+// cross it perpendicularly, leaving a clearance equal to wallSetback on each
+// side so the pipe stays off the wall. Doors on the wall create gaps that
+// pipes pass through (the door's width range is treated as not blocking).
+function subtractWalls(a, b, isHorizontalRow, walls, clearance) {
+  if (!walls || walls.length === 0) return [{ a, b }];
+  const intervals = [{ t0: 0, t1: 1 }];
+  const startV = isHorizontalRow ? a.x : a.y;
+  const endV = isHorizontalRow ? b.x : b.y;
+  const span = endV - startV;
+  if (Math.abs(span) < 1) return [{ a, b }];
+  const fixedV = isHorizontalRow ? a.y : a.x;
+
+  for (const w of walls) {
+    const wDx = w.b.x - w.a.x, wDy = w.b.y - w.a.y;
+    const isWallH = Math.abs(wDy) < eps;
+    const isWallV = Math.abs(wDx) < eps;
+    // A horizontal row only crosses a vertical wall, and vice versa. A wall
+    // parallel to the row never blocks it.
+    if (isHorizontalRow && !isWallV) continue;
+    if (!isHorizontalRow && !isWallH) continue;
+
+    // Wall position along the row's axis, and its extent perpendicular to it.
+    const wallPos = isHorizontalRow ? w.a.x : w.a.y;
+    const wallMin = isHorizontalRow ? Math.min(w.a.y, w.b.y) : Math.min(w.a.x, w.b.x);
+    const wallMax = isHorizontalRow ? Math.max(w.a.y, w.b.y) : Math.max(w.a.x, w.b.x);
+    if (fixedV < wallMin - clearance || fixedV > wallMax + clearance) continue;
+
+    // If a door on this wall covers the row's perpendicular position, the
+    // wall doesn't block the row at this point — pipe passes through the door.
+    const wallLen = Math.hypot(wDx, wDy) || 1;
+    const tAtRow = isHorizontalRow
+      ? (fixedV - w.a.y) / (wDy || 1)
+      : (fixedV - w.a.x) / (wDx || 1);
+    let throughDoor = false;
+    for (const door of w.doors || []) {
+      const halfFrac = (door.width / 2) / wallLen;
+      if (tAtRow >= door.center - halfFrac && tAtRow <= door.center + halfFrac) {
+        throughDoor = true; break;
+      }
+    }
+    if (throughDoor) continue;
+
+    // Block the parametric interval [wallPos - clearance, wallPos + clearance]
+    // along the row.
+    const tBlock0 = (wallPos - clearance - startV) / span;
+    const tBlock1 = (wallPos + clearance - startV) / span;
+    let t0 = Math.min(tBlock0, tBlock1);
+    let t1 = Math.max(tBlock0, tBlock1);
+    if (t1 < 0 || t0 > 1) continue;
+    t0 = Math.max(0, t0);
+    t1 = Math.min(1, t1);
+    const next = [];
+    for (const iv of intervals) {
+      if (t1 <= iv.t0 || t0 >= iv.t1) { next.push(iv); continue; }
+      if (t0 > iv.t0) next.push({ t0: iv.t0, t1: t0 });
+      if (t1 < iv.t1) next.push({ t0: t1, t1: iv.t1 });
+    }
+    intervals.splice(0, intervals.length, ...next);
+    if (intervals.length === 0) break;
+  }
+
+  return intervals
+    .filter(iv => iv.t1 - iv.t0 > 0.01)
+    .map(iv => ({
+      a: { x: a.x + (b.x - a.x) * iv.t0, y: a.y + (b.y - a.y) * iv.t0 },
+      b: { x: a.x + (b.x - a.x) * iv.t1, y: a.y + (b.y - a.y) * iv.t1 },
+    }));
+}
+
 // -----------------------------------------------------------------------------
 // Bifilar (counterflow spiral) — fast path for axis-aligned rectangles only.
 // Non-rectangular polygons fall back to serpentine.
 // -----------------------------------------------------------------------------
 
-function generateBifilar(room, config) {
-  if (!isAxisAlignedRect(room.vertices)) return generateSerpentine(room, config);
+function generateBifilar(room, config, walls = []) {
+  if (!isAxisAlignedRect(room.vertices)) return generateSerpentine(room, config, walls);
+  // If any free wall pierces the room's bbox, fall back to serpentine —
+  // concentric spirals can't route around a wall, but serpentine can.
+  if (walls.length > 0) return generateSerpentine(room, config, walls);
   const { wallSetback, edgeSpacing, pipeSpacing } = config;
   const b = bbox(room.vertices);
   const sb = setbacksForRoom(room, wallSetback);
@@ -238,6 +330,6 @@ function rectSpiral(rect, startOffset, step) {
 // Hybrid (routed) — serpentine with no-go avoidance (already built in).
 // -----------------------------------------------------------------------------
 
-function generateHybrid(room, config) {
-  return generateSerpentine(room, config);
+function generateHybrid(room, config, walls = []) {
+  return generateSerpentine(room, config, walls);
 }

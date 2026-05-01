@@ -106,7 +106,7 @@ export function generateLoops(state) {
     // Each declared zone becomes an independent thermal group with its own loop(s).
     const subs = expandZones(room);
     for (const sub of subs) {
-      const path = generateRoomPath(sub, config);
+      const path = generateRoomPath(sub, config, state.walls || []);
       if (!path || path.length < 2) {
         warnings.push({ level: 'warn', message: `${sub.name}: no valid pipe path (zone too small or fully obstructed).` });
         continue;
