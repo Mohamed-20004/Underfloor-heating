@@ -6,6 +6,14 @@ import { pointsToSmoothPath, bbox, polygonArea, edgeLength, edgeOutwardNormal } 
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+// World bounds: a 32 m × 32 m square (≈ 1024 m²). Pan and zoom are clamped so
+// the user can't drift off into the void and lose the floorplan. Drawings
+// fit comfortably inside; UFH plans for residential ground floors are well
+// under this footprint.
+export const WORLD_BOUNDS = { x: 0, y: 0, w: 32000, h: 32000 };
+const VIEW_MARGIN = 4000; // millimetres of breathing room around the bounds
+const MAX_ZOOM = 0.5;     // px per mm — beyond this is unreadably zoomed in
+
 let canvas;
 let layers = {};
 
@@ -30,16 +38,43 @@ export function setViewport(width, height) {
 
 export function applyView() {
   if (!canvas) return;
+  clampView();
   const w = canvas.clientWidth || 1200;
   const h = canvas.clientHeight || 800;
-  // viewBox covers the world in mm. View pan/zoom is implemented by adjusting
-  // the viewBox so the same content area is visible regardless of canvas size.
-  const z = state.view.zoom; // px per mm
+  const z = state.view.zoom;
   const vbW = w / z;
   const vbH = h / z;
   const vbX = -state.view.panX / z;
   const vbY = -state.view.panY / z;
   canvas.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+}
+
+// Clamp pan and zoom so the world bounds (with a small margin) always stay
+// at least partially in view. The min zoom is dynamic so the whole canvas
+// fits a typical viewport when the user zooms all the way out — that way the
+// floorplan is always one Fit-button-press away.
+function clampView() {
+  const w = canvas.clientWidth || 1200;
+  const h = canvas.clientHeight || 800;
+  // Min zoom: the whole bounds (plus margin on each side) must fit in the
+  // viewport. So zooming all the way out shows the entire canvas.
+  const fitZoomX = w / (WORLD_BOUNDS.w + VIEW_MARGIN * 2);
+  const fitZoomY = h / (WORLD_BOUNDS.h + VIEW_MARGIN * 2);
+  const minZoom = Math.min(fitZoomX, fitZoomY);
+  state.view.zoom = Math.max(minZoom, Math.min(MAX_ZOOM, state.view.zoom));
+  const z = state.view.zoom;
+
+  const minX = WORLD_BOUNDS.x - VIEW_MARGIN;
+  const maxX = WORLD_BOUNDS.x + WORLD_BOUNDS.w + VIEW_MARGIN;
+  const minY = WORLD_BOUNDS.y - VIEW_MARGIN;
+  const maxY = WORLD_BOUNDS.y + WORLD_BOUNDS.h + VIEW_MARGIN;
+  const vbW = w / z, vbH = h / z;
+  // Keep the bounds at least 200 mm visible inside the viewport on each axis,
+  // so the user can never pan it completely off-screen.
+  const vbX = Math.max(minX - vbW + 200, Math.min(maxX - 200, -state.view.panX / z));
+  const vbY = Math.max(minY - vbH + 200, Math.min(maxY - 200, -state.view.panY / z));
+  state.view.panX = -vbX * z;
+  state.view.panY = -vbY * z;
 }
 
 export function clientToWorld(clientX, clientY) {
@@ -54,12 +89,20 @@ export function clientToWorld(clientX, clientY) {
 export function fitToContent() {
   const all = [];
   for (const r of state.rooms) {
-    all.push({ x: r.x, y: r.y });
-    all.push({ x: r.x + r.w, y: r.y + r.h });
+    for (const v of r.vertices || []) all.push(v);
+  }
+  for (const w of state.walls || []) {
+    all.push(w.a); all.push(w.b);
   }
   if (state.manifold) all.push(state.manifold);
-  if (all.length < 2) return;
-  const b = bbox(all);
+  // Fall back to the full bounded canvas when there's nothing drawn yet, so a
+  // fresh project starts with the whole work area in view.
+  let b;
+  if (all.length < 2) {
+    b = { x: WORLD_BOUNDS.x, y: WORLD_BOUNDS.y, w: WORLD_BOUNDS.w, h: WORLD_BOUNDS.h };
+  } else {
+    b = bbox(all);
+  }
   const w = canvas.clientWidth || 1200;
   const h = canvas.clientHeight || 800;
   const padding = 80;
@@ -113,48 +156,76 @@ function drawBackground() {
   // lines when the user zooms way out.
   if (z < 0.005) return;
 
-  const startX = Math.floor(vbX / minor) * minor;
-  const startY = Math.floor(vbY / minor) * minor;
+  // The grid only renders inside the world bounds, so the user always has a
+  // clear visual cue of where the canvas starts and ends.
+  const gridStartX = Math.max(WORLD_BOUNDS.x, Math.floor(vbX / minor) * minor);
+  const gridStartY = Math.max(WORLD_BOUNDS.y, Math.floor(vbY / minor) * minor);
+  const gridEndX = Math.min(WORLD_BOUNDS.x + WORLD_BOUNDS.w, vbX + vbW);
+  const gridEndY = Math.min(WORLD_BOUNDS.y + WORLD_BOUNDS.h, vbY + vbH);
+
+  const startX = gridStartX;
+  const startY = gridStartY;
 
   // Minor grid: every 1 m. Stroke width is in world units (mm), so we scale
   // it inverse to zoom to keep it ~1 px on screen regardless of zoom level.
   const minorStroke = Math.max(2, 1 / z);
   const majorStroke = Math.max(6, 3 / z);
 
-  for (let x = startX; x < vbX + vbW; x += minor) {
+  // Tinted background of the bounded canvas — gives the user a clear sense of
+  // "this is the work area" against the surrounding off-bounds void.
+  svg('rect', {
+    x: WORLD_BOUNDS.x, y: WORLD_BOUNDS.y,
+    width: WORLD_BOUNDS.w, height: WORLD_BOUNDS.h,
+    fill: '#ffffff',
+  }, layers.background);
+
+  for (let x = startX; x <= gridEndX; x += minor) {
     const isMajor = Math.round(x / minor) % (major / minor) === 0;
     svg('line', {
-      x1: x, y1: vbY, x2: x, y2: vbY + vbH,
+      x1: x, y1: gridStartY, x2: x, y2: gridEndY,
       stroke: isMajor ? '#cdd2da' : '#e3e6eb',
       'stroke-width': isMajor ? majorStroke : minorStroke,
     }, layers.background);
   }
-  for (let y = startY; y < vbY + vbH; y += minor) {
+  for (let y = startY; y <= gridEndY; y += minor) {
     const isMajor = Math.round(y / minor) % (major / minor) === 0;
     svg('line', {
-      x1: vbX, y1: y, x2: vbX + vbW, y2: y,
+      x1: gridStartX, y1: y, x2: gridEndX, y2: y,
       stroke: isMajor ? '#cdd2da' : '#e3e6eb',
       'stroke-width': isMajor ? majorStroke : minorStroke,
     }, layers.background);
   }
+
+  // Solid border framing the bounded canvas.
+  svg('rect', {
+    x: WORLD_BOUNDS.x, y: WORLD_BOUNDS.y,
+    width: WORLD_BOUNDS.w, height: WORLD_BOUNDS.h,
+    fill: 'none',
+    stroke: '#9aa3b1',
+    'stroke-width': Math.max(20, 6 / z),
+  }, layers.background);
 
   // Metre coordinate labels along the major grid. Skip when too zoomed out
   // (labels would overlap) or too zoomed in (labels would be huge).
   if (z > 0.02 && z < 0.5) {
     const fontSize = Math.max(80, 12 / z);
     const padding = 8 / z;
-    for (let x = Math.ceil(vbX / major) * major; x < vbX + vbW; x += major) {
+    const labelStartX = Math.max(WORLD_BOUNDS.x, Math.ceil(vbX / major) * major);
+    const labelEndX = Math.min(WORLD_BOUNDS.x + WORLD_BOUNDS.w, vbX + vbW);
+    const labelStartY = Math.max(WORLD_BOUNDS.y, Math.ceil(vbY / major) * major);
+    const labelEndY = Math.min(WORLD_BOUNDS.y + WORLD_BOUNDS.h, vbY + vbH);
+    for (let x = labelStartX; x <= labelEndX; x += major) {
       svg('text', {
-        x, y: vbY + fontSize + padding,
+        x, y: Math.max(vbY, WORLD_BOUNDS.y) + fontSize + padding,
         'font-size': fontSize,
         fill: '#a8aebc',
         'text-anchor': 'middle',
         'font-family': '-apple-system, sans-serif',
       }, layers.background).textContent = `${x / 1000} m`;
     }
-    for (let y = Math.ceil(vbY / major) * major; y < vbY + vbH; y += major) {
+    for (let y = labelStartY; y <= labelEndY; y += major) {
       svg('text', {
-        x: vbX + padding, y: y - padding / 2,
+        x: Math.max(vbX, WORLD_BOUNDS.x) + padding, y: y - padding / 2,
         'font-size': fontSize,
         fill: '#a8aebc',
         'font-family': '-apple-system, sans-serif',

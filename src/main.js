@@ -450,7 +450,12 @@ canvas.addEventListener('pointermove', e => {
 // Resize handling.
 window.addEventListener('resize', () => { applyView(); render(); });
 
-// Initial state: select tool active.
+// Initial state: select tool active. Fit-to-content on first paint shows the
+// whole bounded canvas so the user starts oriented.
 setMode('select');
+// requestAnimationFrame defers to after the DOM has laid out (so the canvas
+// has its final width/height); without this, the fit calculation uses a
+// stale viewport size on Safari and the bounds end up tiny in the corner.
+requestAnimationFrame(() => { fitToContent(); render(); });
 emit();
 setStatus('Ready. Tip: click "Load Sample" then "Generate Layout".');

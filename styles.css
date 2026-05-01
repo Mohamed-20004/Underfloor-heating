@@ -175,7 +175,7 @@ body {
 
 #canvas {
   flex: 1;
-  background: #ffffff;
+  background: #e8eaee;  /* the off-bounds void; the canvas itself paints white */
   cursor: default;
   min-height: 0;
   user-select: none;
