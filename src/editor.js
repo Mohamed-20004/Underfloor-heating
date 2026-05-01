@@ -67,19 +67,12 @@ function onPointerDown(e) {
       canvas.setPointerCapture(e.pointerId);
       break;
     case 'draw-custom': {
-      // Tap-to-place corners. Each new corner snaps so its edges are axis-
-      // aligned with the previous corner. Tap near the start to close.
+      // Tap-to-place corners. Each new corner snaps so its edge from the
+      // previous corner is axis-aligned. Tap near the start to close.
       if (!customVerts) customVerts = [];
-      // Snap subsequent corners to be axis-aligned with the previous one.
-      let pt = sp;
-      if (customVerts.length > 0) {
-        const prev = customVerts[customVerts.length - 1];
-        if (Math.abs(pt.x - prev.x) < Math.abs(pt.y - prev.y)) {
-          pt = { x: prev.x, y: pt.y };
-        } else {
-          pt = { x: pt.x, y: prev.y };
-        }
-      }
+      const pt = customVerts.length > 0
+        ? snapToAxis(customVerts[customVerts.length - 1], sp)
+        : sp;
       // Closing: tap within snap radius of the first vertex finalises the
       // polygon. Need at least 4 corners (3 + close).
       if (customVerts.length >= 3) {
@@ -192,6 +185,13 @@ function onPointerMove(e) {
       updateTracingImage({ w: newW });
     }
     return;
+  }
+  // Live preview while drawing a custom polygon: dashed lead-in from the last
+  // placed corner to the snapped cursor, plus a dashed closing line back to
+  // the first corner once we have ≥3 placed corners.
+  if (state.mode === 'draw-custom' && customVerts && customVerts.length > 0) {
+    const cur = snapToAxis(customVerts[customVerts.length - 1], { x: snap(wp.x), y: snap(wp.y) });
+    showPreviewPolygon(customVerts, cur);
   }
   if (!dragStart) return;
   dragEnd = { x: snap(wp.x), y: snap(wp.y) };
@@ -340,23 +340,89 @@ function nearestEdgeOnRoom(r, p) {
   return { edgeIndex: best.edgeIndex, center: t };
 }
 
-// Lightweight in-progress polygon preview, drawn while the user places corners.
-function showPreviewPolygon(verts) {
+// Snap `pt` to be axis-aligned with `prev`: keep the larger axis-parallel
+// component and zero the other. Mirrors the snap rule used when corners are
+// committed so the preview matches the result of a tap.
+function snapToAxis(prev, pt) {
+  if (Math.abs(pt.x - prev.x) < Math.abs(pt.y - prev.y)) {
+    return { x: prev.x, y: pt.y };
+  }
+  return { x: pt.x, y: prev.y };
+}
+
+// In-progress polygon preview drawn while the user places corners.
+//   - Solid blue line: edges connecting placed corners.
+//   - Dashed blue line: lead-in from the last placed corner to the cursor.
+//   - Dashed grey line: closing edge from the cursor back to the first corner
+//     (only when ≥ 3 corners are placed, since closing earlier would be a
+//     degenerate shape).
+//   - Metre labels at the midpoint of each preview line so the user sees the
+//     length they're about to commit.
+function showPreviewPolygon(verts, cursor) {
   const layer = document.querySelector('#canvas g[data-layer="preview"]');
   if (!layer) return;
   layer.innerHTML = '';
   if (!verts || verts.length === 0) return;
   const SVG_NS = 'http://www.w3.org/2000/svg';
-  const path = document.createElementNS(SVG_NS, 'polyline');
-  path.setAttribute('points', verts.map(v => `${v.x},${v.y}`).join(' '));
-  path.setAttribute('class', 'preview');
-  path.setAttribute('fill', 'none');
-  layer.appendChild(path);
-  for (const v of verts) {
-    const c = document.createElementNS(SVG_NS, 'circle');
-    c.setAttribute('cx', v.x); c.setAttribute('cy', v.y);
-    c.setAttribute('r', 60);
-    c.setAttribute('class', 'preview');
-    layer.appendChild(c);
+  const make = (tag, attrs = {}) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    layer.appendChild(el);
+    return el;
+  };
+
+  // Solid edges between placed corners.
+  if (verts.length >= 2) {
+    make('polyline', {
+      points: verts.map(v => `${v.x},${v.y}`).join(' '),
+      class: 'preview',
+      fill: 'none',
+    });
   }
+  for (const v of verts) {
+    make('circle', { cx: v.x, cy: v.y, r: 80, class: 'preview' });
+  }
+  // Length labels on existing edges (helps when re-thinking the shape).
+  for (let i = 0; i + 1 < verts.length; i++) {
+    edgeLengthLabel(make, verts[i], verts[i + 1], 'preview-length');
+  }
+
+  if (!cursor) return;
+
+  // Dashed lead-in from last vertex to the snapped cursor.
+  const last = verts[verts.length - 1];
+  make('line', {
+    x1: last.x, y1: last.y, x2: cursor.x, y2: cursor.y,
+    class: 'preview-dashed',
+  });
+  edgeLengthLabel(make, last, cursor, 'preview-length live');
+
+  // Dashed closing line back to the first vertex.
+  if (verts.length >= 2) {
+    const first = verts[0];
+    make('line', {
+      x1: cursor.x, y1: cursor.y, x2: first.x, y2: first.y,
+      class: 'preview-closing',
+    });
+    if (verts.length >= 2) edgeLengthLabel(make, cursor, first, 'preview-length closing');
+    // Highlight the first corner so the user knows where to tap to close.
+    make('circle', { cx: first.x, cy: first.y, r: 200, class: 'preview-close-target' });
+  }
+}
+
+function edgeLengthLabel(make, a, b, cls) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 200) return;
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  // Offset the label perpendicular to the line so it doesn't sit on top of it.
+  const nx = -dy / len, ny = dx / len;
+  const off = 220;
+  make('text', {
+    x: mx + nx * off, y: my + ny * off + 35,
+    class: cls,
+    'font-size': 110,
+    'text-anchor': 'middle',
+  }).textContent = `${(len / 1000).toFixed(2)} m`;
 }

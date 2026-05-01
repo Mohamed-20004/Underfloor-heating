@@ -320,6 +320,39 @@ body {
   stroke-width: 30;
   stroke-dasharray: 80 60;
 }
+.preview-dashed {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 30;
+  stroke-dasharray: 100 80;
+}
+.preview-closing {
+  fill: none;
+  stroke: #8a93a4;
+  stroke-width: 25;
+  stroke-dasharray: 60 100;
+}
+.preview-close-target {
+  fill: rgba(46, 140, 79, 0.20);
+  stroke: var(--ok);
+  stroke-width: 30;
+}
+.preview-length {
+  fill: var(--primary);
+  font-family: -apple-system, sans-serif;
+  font-weight: 600;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: white;
+  stroke-width: 30;
+}
+.preview-length.live {
+  fill: #1d6fc4;
+}
+.preview-length.closing {
+  fill: #5a6477;
+  font-weight: 500;
+}
 .title-block {
   fill: white;
   stroke: #1d2330;
