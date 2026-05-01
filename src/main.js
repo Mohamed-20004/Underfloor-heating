@@ -64,9 +64,10 @@ function toolHint(mode) {
     case 'select': return 'Click a room to select it.';
     case 'draw-room': return 'Click and drag to draw a room.';
     case 'edit-walls': return 'Click any wall to toggle external/internal.';
+    case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
     case 'place-manifold': return 'Click anywhere to place the manifold.';
     case 'draw-nogo': return 'Click and drag inside a room to add a no-go zone.';
-    case 'delete': return 'Click a room or no-go zone to delete it.';
+    case 'delete': return 'Click a room, door, or no-go zone to delete it.';
     default: return '';
   }
 }
@@ -137,6 +138,7 @@ function zoomBy(factor) {
 const roomNameEl = $('#room-name');
 const roomPatternEl = $('#room-pattern');
 const roomFinishEl = $('#room-finish');
+const roomZonesEl = $('#room-zones');
 const roomAreaEl = $('#room-area');
 const wallChecks = {
   n: $('input[data-wall="n"]'),
@@ -156,6 +158,12 @@ roomPatternEl.addEventListener('change', () => {
 roomFinishEl.addEventListener('change', () => {
   const id = state.selection.id;
   if (id) updateRoom(id, { finish: roomFinishEl.value });
+});
+roomZonesEl.addEventListener('input', () => {
+  const id = state.selection.id;
+  if (!id) return;
+  const n = Math.max(1, Math.min(6, parseInt(roomZonesEl.value, 10) || 1));
+  updateRoom(id, { zoneCount: n });
 });
 for (const side of ['n', 'e', 's', 'w']) {
   wallChecks[side].addEventListener('change', () => {
@@ -194,6 +202,7 @@ function syncRoomPanel() {
   if (document.activeElement !== roomNameEl) roomNameEl.value = room.name;
   roomPatternEl.value = room.pattern;
   roomFinishEl.value = room.finish || 'tile';
+  if (document.activeElement !== roomZonesEl) roomZonesEl.value = room.zoneCount || 1;
   roomAreaEl.textContent = ((room.w * room.h) / 1e6).toFixed(2);
   for (const side of ['n', 'e', 's', 'w']) {
     wallChecks[side].checked = room.walls[side] === 'external';

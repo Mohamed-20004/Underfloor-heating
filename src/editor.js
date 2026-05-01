@@ -1,8 +1,8 @@
 // editor.js — handles pointer interactions on the SVG canvas and dispatches
 // mode-specific actions to the state module. Pan/zoom is built in.
 
-import { state, addRoom, addNoGo, deleteRoom, deleteNoGo, selectRoom, clearSelection,
-  setManifold, toggleWall, emit } from './state.js';
+import { state, addRoom, addNoGo, deleteRoom, deleteNoGo, addDoor, deleteDoor,
+  selectRoom, clearSelection, setManifold, toggleWall, emit } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -60,12 +60,29 @@ function onPointerDown(e) {
       }
       break;
     }
+    case 'add-door': {
+      // Pick the closest wall edge of the closest room and place a door there.
+      const room = roomNearest(wp, 800);
+      if (!room) { onStatus('Tap on a room edge to place a door.'); break; }
+      const placement = nearestEdgeOnRoom(room, wp);
+      if (!placement) break;
+      addDoor(room.id, placement.side, placement.center, 800);
+      onStatus(`Added door on ${room.name} (${placement.side} wall).`);
+      break;
+    }
     case 'delete': {
       const target = e.target;
-      if (target && target.dataset && target.dataset.nogoId) {
-        deleteNoGo(target.dataset.roomId, target.dataset.nogoId);
-        onStatus('Removed no-go zone.');
-        break;
+      if (target && target.dataset) {
+        if (target.dataset.doorId) {
+          deleteDoor(target.dataset.roomId, target.dataset.doorId);
+          onStatus('Removed door.');
+          break;
+        }
+        if (target.dataset.nogoId) {
+          deleteNoGo(target.dataset.roomId, target.dataset.nogoId);
+          onStatus('Removed no-go zone.');
+          break;
+        }
       }
       const room = roomAt(wp);
       if (room) {
@@ -174,4 +191,57 @@ function wallAt(target) {
   const { roomId, wallSide } = target.dataset;
   if (!roomId || !wallSide) return null;
   return { roomId, side: wallSide };
+}
+
+// Find the room whose perimeter is closest to point p, within `tolerance` mm.
+function roomNearest(p, tolerance) {
+  let best = null, bestDist = tolerance;
+  for (const r of state.rooms) {
+    const d = distToRoomPerimeter(p, r);
+    if (d < bestDist) { bestDist = d; best = r; }
+  }
+  return best;
+}
+
+function distToRoomPerimeter(p, r) {
+  // Distance from p to the nearest of the four wall segments.
+  const x1 = r.x, y1 = r.y, x2 = r.x + r.w, y2 = r.y + r.h;
+  return Math.min(
+    pointSegDist(p, x1, y1, x2, y1),
+    pointSegDist(p, x2, y1, x2, y2),
+    pointSegDist(p, x1, y2, x2, y2),
+    pointSegDist(p, x1, y1, x1, y2),
+  );
+}
+
+function pointSegDist(p, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((p.x - ax) * dx + (p.y - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return Math.hypot(p.x - cx, p.y - cy);
+}
+
+// Snap a point to the nearest of a room's four wall edges. Returns the side
+// and the fractional centre (0..1) along that wall.
+function nearestEdgeOnRoom(r, p) {
+  const candidates = [
+    { side: 'n', a: { x: r.x, y: r.y },               b: { x: r.x + r.w, y: r.y } },
+    { side: 'e', a: { x: r.x + r.w, y: r.y },         b: { x: r.x + r.w, y: r.y + r.h } },
+    { side: 's', a: { x: r.x, y: r.y + r.h },         b: { x: r.x + r.w, y: r.y + r.h } },
+    { side: 'w', a: { x: r.x, y: r.y },               b: { x: r.x, y: r.y + r.h } },
+  ];
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    const d = pointSegDist(p, c.a.x, c.a.y, c.b.x, c.b.y);
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  if (!best) return null;
+  // Compute fractional centre along the wall.
+  const dx = best.b.x - best.a.x, dy = best.b.y - best.a.y;
+  const lenSq = dx * dx + dy * dy;
+  let t = ((p.x - best.a.x) * dx + (p.y - best.a.y) * dy) / lenSq;
+  t = Math.max(0.05, Math.min(0.95, t));
+  return { side: best.side, center: t };
 }

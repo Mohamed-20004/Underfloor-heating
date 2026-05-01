@@ -149,22 +149,125 @@ function drawWalls() {
   for (const room of state.rooms) {
     const x1 = room.x, y1 = room.y, x2 = room.x + room.w, y2 = room.y + room.h;
     const segs = {
-      n: { a: { x: x1, y: y1 }, b: { x: x2, y: y1 } },
-      e: { a: { x: x2, y: y1 }, b: { x: x2, y: y2 } },
-      s: { a: { x: x1, y: y2 }, b: { x: x2, y: y2 } },
-      w: { a: { x: x1, y: y1 }, b: { x: x1, y: y2 } },
+      n: { a: { x: x1, y: y1 }, b: { x: x2, y: y1 }, axis: 'h', length: room.w },
+      e: { a: { x: x2, y: y1 }, b: { x: x2, y: y2 }, axis: 'v', length: room.h },
+      s: { a: { x: x1, y: y2 }, b: { x: x2, y: y2 }, axis: 'h', length: room.w },
+      w: { a: { x: x1, y: y1 }, b: { x: x1, y: y2 }, axis: 'v', length: room.h },
     };
     for (const side of ['n', 'e', 's', 'w']) {
       const cls = room.walls[side] === 'external' ? 'wall external' : 'wall internal';
-      svg('line', {
-        x1: segs[side].a.x, y1: segs[side].a.y,
-        x2: segs[side].b.x, y2: segs[side].b.y,
-        class: cls,
-        'data-room-id': room.id,
-        'data-wall-side': side,
-      }, layers.walls);
+      const seg = segs[side];
+      const doors = (room.doors || []).filter(d => d.side === side);
+      const subSegs = breakWallByDoors(seg, doors);
+      for (const sub of subSegs) {
+        svg('line', {
+          x1: sub.a.x, y1: sub.a.y, x2: sub.b.x, y2: sub.b.y,
+          class: cls,
+          'data-room-id': room.id,
+          'data-wall-side': side,
+        }, layers.walls);
+      }
+    }
+    // Door swing arcs and click targets.
+    for (const d of room.doors || []) {
+      drawDoor(room, d);
     }
   }
+}
+
+// Split a wall segment around door openings, returning an array of sub-segments
+// that flank the doors. Doors are ordered along the wall by their centre.
+function breakWallByDoors(seg, doors) {
+  if (!doors.length) return [seg];
+  const sorted = [...doors].sort((a, b) => a.center - b.center);
+  const result = [];
+  // Parametric position along segment from a (t=0) to b (t=1).
+  const dx = seg.b.x - seg.a.x, dy = seg.b.y - seg.a.y;
+  const lenMM = seg.length;
+  let cursor = 0;
+  for (const d of sorted) {
+    const halfFrac = (d.width / 2) / lenMM;
+    const start = Math.max(0, d.center - halfFrac);
+    const end = Math.min(1, d.center + halfFrac);
+    if (start > cursor + 1e-4) {
+      result.push({
+        a: { x: seg.a.x + dx * cursor, y: seg.a.y + dy * cursor },
+        b: { x: seg.a.x + dx * start, y: seg.a.y + dy * start },
+      });
+    }
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < 1 - 1e-4) {
+    result.push({
+      a: { x: seg.a.x + dx * cursor, y: seg.a.y + dy * cursor },
+      b: { x: seg.a.x + dx, y: seg.a.y + dy },
+    });
+  }
+  return result;
+}
+
+function drawDoor(room, d) {
+  // Compute the two door posts and the swing arc target.
+  const w = d.width;
+  let post1, post2, swingTarget, openInDir;
+  switch (d.side) {
+    case 'n': {
+      const cx = room.x + d.center * room.w;
+      post1 = { x: cx - w / 2, y: room.y };
+      post2 = { x: cx + w / 2, y: room.y };
+      swingTarget = { x: cx - w / 2, y: room.y + w }; // hinged at right post, swings into room
+      openInDir = { x: -1, y: 1 };
+      break;
+    }
+    case 's': {
+      const cx = room.x + d.center * room.w;
+      post1 = { x: cx - w / 2, y: room.y + room.h };
+      post2 = { x: cx + w / 2, y: room.y + room.h };
+      swingTarget = { x: cx - w / 2, y: room.y + room.h - w };
+      openInDir = { x: -1, y: -1 };
+      break;
+    }
+    case 'w': {
+      const cy = room.y + d.center * room.h;
+      post1 = { x: room.x, y: cy - w / 2 };
+      post2 = { x: room.x, y: cy + w / 2 };
+      swingTarget = { x: room.x + w, y: cy - w / 2 };
+      openInDir = { x: 1, y: -1 };
+      break;
+    }
+    case 'e':
+    default: {
+      const cy = room.y + d.center * room.h;
+      post1 = { x: room.x + room.w, y: cy - w / 2 };
+      post2 = { x: room.x + room.w, y: cy + w / 2 };
+      swingTarget = { x: room.x + room.w - w, y: cy - w / 2 };
+      openInDir = { x: -1, y: -1 };
+      break;
+    }
+  }
+  // Door leaf: line from post2 (hinge) to swingTarget.
+  svg('line', {
+    x1: post2.x, y1: post2.y, x2: swingTarget.x, y2: swingTarget.y,
+    class: 'door-leaf',
+  }, layers.walls);
+  // Swing arc from post1 to swingTarget centred at post2.
+  svg('path', {
+    d: `M ${post1.x} ${post1.y} A ${w} ${w} 0 0 ${arcSweep(d.side)} ${swingTarget.x} ${swingTarget.y}`,
+    class: 'door-arc',
+  }, layers.walls);
+  // Invisible thicker hit target so deletion / interaction is touch-friendly.
+  const cx = (post1.x + post2.x) / 2, cy = (post1.y + post2.y) / 2;
+  svg('rect', {
+    x: cx - w / 2, y: cy - w / 2, width: w, height: w,
+    fill: 'transparent', stroke: 'transparent',
+    'data-room-id': room.id,
+    'data-door-id': d.id,
+  }, layers.walls);
+}
+
+function arcSweep(side) {
+  // SVG sweep flag chosen so the door arc curves inward into the room.
+  return (side === 'n' || side === 'e') ? 1 : 0;
 }
 
 function drawNoGo() {

@@ -5,6 +5,48 @@
 
 import { generateRoomPath } from './patterns.js';
 import { polylineLength, bbox, dist } from './geometry.js';
+import { routeTail } from './doors.js';
+
+// Split a room into N independent thermal zones along its longer dimension.
+// The shared boundaries become "partition" walls so the pattern engine knows
+// to omit the wall setback there (pipes from adjacent zones meet flush).
+export function expandZones(room) {
+  const n = Math.max(1, Math.min(8, room.zoneCount || 1));
+  if (n === 1) return [{ ...room, zoneOf: room.id, zoneIndex: 1, zoneCount: 1 }];
+  const horizontal = room.w >= room.h; // split along the longer axis
+  const subs = [];
+  for (let i = 0; i < n; i++) {
+    const isFirst = i === 0;
+    const isLast = i === n - 1;
+    const sub = { ...room };
+    if (horizontal) {
+      const stripW = room.w / n;
+      sub.x = room.x + i * stripW;
+      sub.w = stripW;
+    } else {
+      const stripH = room.h / n;
+      sub.y = room.y + i * stripH;
+      sub.h = stripH;
+    }
+    sub.id = `${room.id}/z${i + 1}`;
+    sub.name = `${room.name} ${i + 1}`;
+    sub.zoneOf = room.id;
+    sub.zoneIndex = i + 1;
+    sub.zoneCount = n;
+    // Inherit walls but rewrite the shared edges as 'partition'.
+    sub.walls = { ...room.walls };
+    if (horizontal) {
+      if (!isFirst) sub.walls.w = 'partition';
+      if (!isLast) sub.walls.e = 'partition';
+    } else {
+      if (!isFirst) sub.walls.n = 'partition';
+      if (!isLast) sub.walls.s = 'partition';
+    }
+    sub.parentRoomId = room.id;
+    subs.push(sub);
+  }
+  return subs;
+}
 
 export function generateLoops(state) {
   const { rooms, manifold, config } = state;
@@ -21,65 +63,29 @@ export function generateLoops(state) {
   }
 
   let loopIndex = 1;
+  let nextGroup = 1;
 
   for (const room of rooms) {
-    const path = generateRoomPath(room, config);
-    if (!path || path.length < 2) {
-      warnings.push({ level: 'warn', message: `${room.name}: no valid pipe path (room too small or fully obstructed).` });
-      continue;
+    if (!room.doors || room.doors.length === 0) {
+      warnings.push({ level: 'warn', message: `${room.name}: no door defined — pipe tails will run as straight lines and may cross walls. Use the Door tool.` });
     }
-
-    // Compute pipe length excluding manifold tails so we can split sensibly.
-    const pipeLen = polylineLength(path);
-    const tailEntry = dist(path[0], manifold);
-    const tailExit = dist(path[path.length - 1], manifold);
-    const totalWithTails = pipeLen + tailEntry + tailExit;
-
-    if (totalWithTails <= config.maxLoopLength) {
-      loops.push(buildLoop({
-        index: loopIndex++,
-        room,
-        manifold,
-        path,
-        pipeLen,
-        tailEntry,
-        tailExit,
-      }));
-      continue;
+    // Each declared zone becomes an independent thermal group with its own loop(s).
+    const subs = expandZones(room);
+    for (const sub of subs) {
+      const path = generateRoomPath(sub, config);
+      if (!path || path.length < 2) {
+        warnings.push({ level: 'warn', message: `${sub.name}: no valid pipe path (zone too small or fully obstructed).` });
+        continue;
+      }
+      const pipeLen = polylineLength(path);
+      const builtLoops = buildLoopsForPath(path, pipeLen, sub, room, manifold, config, () => loopIndex++);
+      const groupNo = nextGroup++;
+      for (const l of builtLoops) l.group = groupNo;
+      loops.push(...builtLoops);
+      if (builtLoops.length > 1) {
+        warnings.push({ level: 'warn', message: `${sub.name}: split into ${builtLoops.length} loops (path exceeded ${(config.maxLoopLength / 1000).toFixed(0)} m cap).` });
+      }
     }
-
-    // Path is too long for a single loop — split it. We split the in-room
-    // pipe path so each segment plus its tails is under the cap.
-    const segments = splitPath(path, manifold, config.maxLoopLength);
-    if (segments.length === 0) {
-      warnings.push({ level: 'err', message: `${room.name}: cannot split into compliant loops; consider denser spacing or a smaller zone.` });
-      continue;
-    }
-    for (const seg of segments) {
-      const segLen = polylineLength(seg);
-      const tIn = dist(seg[0], manifold);
-      const tOut = dist(seg[seg.length - 1], manifold);
-      loops.push(buildLoop({
-        index: loopIndex++,
-        room,
-        manifold,
-        path: seg,
-        pipeLen: segLen,
-        tailEntry: tIn,
-        tailExit: tOut,
-      }));
-    }
-    warnings.push({ level: 'warn', message: `${room.name}: split into ${segments.length} loops (combined path exceeded ${(config.maxLoopLength / 1000).toFixed(0)} m).` });
-  }
-
-  // Assign groups: by default, one thermostatic group per room.
-  const roomToGroup = new Map();
-  let nextGroup = 1;
-  for (const loop of loops) {
-    if (!roomToGroup.has(loop.roomId)) {
-      roomToGroup.set(loop.roomId, nextGroup++);
-    }
-    loop.group = roomToGroup.get(loop.roomId);
   }
 
   // Assign colours (graph 4-colouring on bounding-box adjacency).
@@ -99,20 +105,69 @@ export function generateLoops(state) {
   return { loops, warnings };
 }
 
-function buildLoop({ index, room, manifold, path, pipeLen, tailEntry, tailExit }) {
-  const totalLength = pipeLen + tailEntry + tailExit;
+// Build one or more loops for a generated path, splitting if the path plus
+// door-routed tails would exceed the maxLoopLength cap.
+function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nextIndex) {
+  const flowFull = routeTail(manifold, path[0], parentRoom);
+  const returnFull = routeTail(manifold, path[path.length - 1], parentRoom);
+  const tailIn = polylineLength(flowFull.points);
+  const tailOut = polylineLength(returnFull.points);
+  const total = pipeLen + tailIn + tailOut;
+
+  if (total <= config.maxLoopLength) {
+    return [buildLoop({
+      index: nextIndex(),
+      sub,
+      parentRoom,
+      manifold,
+      path,
+      flowTailPts: flowFull.points,
+      returnTailPts: returnFull.points,
+      pipeLen,
+      tailLen: tailIn + tailOut,
+    })];
+  }
+
+  // Split the path so each sub-segment plus its own door-routed tails fits.
+  const segs = splitPathByCap(path, parentRoom, manifold, config.maxLoopLength);
+  const out = [];
+  for (const seg of segs) {
+    const segPipe = polylineLength(seg);
+    const flow = routeTail(manifold, seg[0], parentRoom);
+    const ret = routeTail(manifold, seg[seg.length - 1], parentRoom);
+    const tIn = polylineLength(flow.points), tOut = polylineLength(ret.points);
+    out.push(buildLoop({
+      index: nextIndex(),
+      sub,
+      parentRoom,
+      manifold,
+      path: seg,
+      flowTailPts: flow.points,
+      returnTailPts: ret.points,
+      pipeLen: segPipe,
+      tailLen: tIn + tOut,
+    }));
+  }
+  return out;
+}
+
+function buildLoop({ index, sub, parentRoom, manifold, path, flowTailPts, returnTailPts, pipeLen, tailLen }) {
+  const totalLength = pipeLen + tailLen;
   const label = `M1-Loop ${String(index).padStart(2, '0')}-${(totalLength / 1000).toFixed(0)}m`;
   return {
     id: `loop-${index}`,
     index,
     label,
-    roomId: room.id,
-    roomName: room.name,
+    roomId: parentRoom.id,
+    roomName: sub.name,
+    parentRoomName: parentRoom.name,
+    zoneIndex: sub.zoneIndex || 1,
+    zoneCount: sub.zoneCount || 1,
     path,
-    flowTail: [{ x: manifold.x, y: manifold.y }, path[0]],
-    returnTail: [path[path.length - 1], { x: manifold.x, y: manifold.y }],
+    flowTail: flowTailPts,
+    returnTail: [...returnTailPts].reverse(), // draw return as path[-1] → manifold
     pipeLength: pipeLen,
-    tailLength: tailEntry + tailExit,
+    tailLength: tailLen,
     totalLength,
     group: 1,
     colour: 0,
@@ -120,20 +175,19 @@ function buildLoop({ index, room, manifold, path, pipeLen, tailEntry, tailExit }
   };
 }
 
-// Split a polyline into sub-paths each obeying the loop-length cap when its
-// own manifold tails are included. Greedy: walk the path, accumulate segments
-// until adding one more would exceed the cap, then start a new segment from
-// the next point.
-function splitPath(path, manifold, maxTotal) {
+// Split a polyline into sub-paths so each, plus its own door-routed tails,
+// stays under the cap. Greedy: walk the path, accumulate segments until
+// adding the next point would exceed the cap, then start a new segment.
+function splitPathByCap(path, parentRoom, manifold, maxTotal) {
   if (path.length < 2) return [];
   const segments = [];
   let current = [path[0]];
   let pipeAcc = 0;
-
   for (let i = 1; i < path.length; i++) {
     const nextPipe = pipeAcc + dist(path[i - 1], path[i]);
-    const total = nextPipe + dist(current[0], manifold) + dist(path[i], manifold);
-    if (total > maxTotal && current.length >= 2) {
+    const tIn = polylineLength(routeTail(manifold, current[0], parentRoom).points);
+    const tOut = polylineLength(routeTail(manifold, path[i], parentRoom).points);
+    if (nextPipe + tIn + tOut > maxTotal && current.length >= 2) {
       segments.push(current);
       current = [path[i - 1], path[i]];
       pipeAcc = dist(path[i - 1], path[i]);

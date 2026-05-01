@@ -21,6 +21,8 @@ console.log('# Sample plan loads');
 loadSample();
 assert(state.rooms.length === 5, 'sample plan creates 5 rooms');
 assert(!!state.manifold, 'manifold placed by sample loader');
+assert(state.rooms.every(r => Array.isArray(r.doors)), 'every room has a doors array');
+assert(state.rooms.find(r => r.name === 'LIVING').zoneCount === 2, 'living room has 2 zones');
 
 console.log('# Per-room pattern generation');
 for (const room of state.rooms) {
@@ -36,11 +38,27 @@ for (const room of state.rooms) {
 
 console.log('# Loop assembly');
 const { loops, warnings } = generateLoops(state);
-assert(loops.length >= 5, `at least one loop per room (got ${loops.length})`);
+assert(loops.length >= 6, `at least one loop per zone (got ${loops.length})`);
 for (const l of loops) {
   assert(l.totalLength <= state.config.maxLoopLength, `${l.label} respects max loop length`);
   assert(l.path.length >= 2, `${l.label} has polyline points`);
   assert(typeof l.colour === 'number' && l.colour >= 0 && l.colour <= 3, `${l.label} colour in [0,3]`);
+}
+
+console.log('# Multi-zone splitting');
+const livingLoops = loops.filter(l => l.parentRoomName === 'LIVING');
+assert(livingLoops.length >= 2, `LIVING room produces multiple loops via 2-zone split (got ${livingLoops.length})`);
+const livingGroups = new Set(livingLoops.map(l => l.group));
+assert(livingGroups.size >= 2, `LIVING zones get distinct group numbers (got ${livingGroups.size})`);
+
+console.log('# Door-routed tails');
+for (const l of loops) {
+  // With a door defined, a tail should be a 4-point polyline (manifold → outer → inner → first pipe pt).
+  const room = state.rooms.find(r => r.id === l.roomId);
+  if (room && room.doors && room.doors.length > 0) {
+    assert(l.flowTail.length === 4, `${l.label} flow tail routes through door (4 points)`);
+    assert(l.returnTail.length === 4, `${l.label} return tail routes through door (4 points)`);
+  }
 }
 
 console.log('# Adjacent loops do not share a colour (when possible)');

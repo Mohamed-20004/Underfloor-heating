@@ -46,6 +46,18 @@ export function insetRect(rect, inset) {
   };
 }
 
+// Inset a room rectangle by per-side amounts. Sub-zone partition edges use
+// zero so pipe coverage runs continuously across them.
+export function insetRectPerSide(rect, insets) {
+  const n = insets.n || 0, e = insets.e || 0, s = insets.s || 0, w = insets.w || 0;
+  return {
+    x: rect.x + w,
+    y: rect.y + n,
+    w: Math.max(0, rect.w - w - e),
+    h: Math.max(0, rect.h - n - s),
+  };
+}
+
 // Get the four wall segments of a rectangular room, keyed by compass direction.
 export function roomWalls(room) {
   const x1 = room.x, y1 = room.y, x2 = room.x + room.w, y2 = room.y + room.h;

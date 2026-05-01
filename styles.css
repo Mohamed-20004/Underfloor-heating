@@ -224,6 +224,8 @@ body {
 .wall.external { stroke: #2c3340; stroke-width: 80; }
 .wall.internal { stroke: #6b7587; stroke-width: 50; stroke-dasharray: 0; }
 .wall.hover { stroke: var(--primary); }
+.door-leaf { stroke: #8a93a4; stroke-width: 25; fill: none; }
+.door-arc { stroke: #b4bcc8; stroke-width: 15; fill: none; stroke-dasharray: 0; }
 .room-label {
   font-family: -apple-system, sans-serif;
   font-weight: 700;

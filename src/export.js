@@ -103,6 +103,8 @@ function embeddedCSS() {
     .room-rect.selected { stroke: #1d6fc4; }
     .wall.external { stroke: #2c3340; stroke-width: 80; }
     .wall.internal { stroke: #6b7587; stroke-width: 50; }
+    .door-leaf { stroke: #8a93a4; stroke-width: 25; fill: none; }
+    .door-arc { stroke: #b4bcc8; stroke-width: 15; fill: none; }
     .room-label { font-weight: 700; text-anchor: middle; fill: #6b7587; }
     .room-area { text-anchor: middle; fill: #99a2b1; }
     .nogo { fill: rgba(196, 38, 46, 0.10); stroke: #c4262e; stroke-width: 20; stroke-dasharray: 80 60; }

@@ -60,8 +60,10 @@ export function addRoom(rect) {
     h: Math.round(rect.h),
     walls: { n: 'external', e: 'internal', s: 'internal', w: 'external' },
     noGoZones: [],
+    doors: [],
     pattern: 'serpentine',
     finish: 'tile',
+    zoneCount: 1,
   };
   state.rooms.push(room);
   state.selection = { type: 'room', id: room.id };
@@ -110,6 +112,30 @@ export function deleteNoGo(roomId, nogoId) {
   emit();
 }
 
+// Doors live as openings on a specific wall side, parameterised by the
+// fractional centre position (0..1 along the wall) and a width in millimetres.
+// Walls render with a gap at each door, and pipe tails route through them.
+export function addDoor(roomId, side, center, width = 800) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  if (!r.doors) r.doors = [];
+  const c = Math.max(0.05, Math.min(0.95, center));
+  r.doors.push({
+    id: newId('door'),
+    side,
+    center: c,
+    width,
+  });
+  emit();
+}
+
+export function deleteDoor(roomId, doorId) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r || !r.doors) return;
+  r.doors = r.doors.filter(d => d.id !== doorId);
+  emit();
+}
+
 export function setManifold(point) {
   state.manifold = { x: Math.round(point.x), y: Math.round(point.y) };
   emit();
@@ -150,14 +176,16 @@ export function loadSample() {
       { id: newId('nogo'), x: 0, y: 0, w: 4500, h: 600 },           // run of units along north wall
       { id: newId('nogo'), x: 0, y: 600, w: 600, h: 1800 },          // tall units against west wall
     ],
-    pattern: 'serpentine', finish: 'tile',
+    doors: [{ id: newId('door'), side: 's', center: 0.85, width: 800 }],
+    pattern: 'serpentine', finish: 'tile', zoneCount: 1,
   });
   state.rooms.push({
     id: newId('room'), name: 'DINING',
     x: 4500, y: 0, w: 3500, h: 3500,
     walls: { n: 'external', e: 'external', s: 'internal', w: 'internal' },
     noGoZones: [],
-    pattern: 'serpentine', finish: 'engineered',
+    doors: [{ id: newId('door'), side: 's', center: 0.2, width: 900 }],
+    pattern: 'serpentine', finish: 'engineered', zoneCount: 1,
   });
   state.rooms.push({
     id: newId('room'), name: 'LIVING',
@@ -166,7 +194,8 @@ export function loadSample() {
     noGoZones: [
       { id: newId('nogo'), x: 1800, y: 3500, w: 1400, h: 400 },       // fireplace hearth
     ],
-    pattern: 'bifilar', finish: 'carpet',
+    doors: [{ id: newId('door'), side: 'e', center: 0.05, width: 900 }],
+    pattern: 'bifilar', finish: 'carpet', zoneCount: 2,
   });
   state.rooms.push({
     id: newId('room'), name: 'HALL',
@@ -175,7 +204,11 @@ export function loadSample() {
     noGoZones: [
       { id: newId('nogo'), x: 5500, y: 5800, w: 1800, h: 1500 },     // stairs
     ],
-    pattern: 'hybrid', finish: 'tile',
+    doors: [
+      { id: newId('door'), side: 'n', center: 0.5, width: 900 },
+      { id: newId('door'), side: 'w', center: 0.05, width: 900 },
+    ],
+    pattern: 'hybrid', finish: 'tile', zoneCount: 1,
   });
   state.rooms.push({
     id: newId('room'), name: 'WC',
@@ -184,7 +217,8 @@ export function loadSample() {
     noGoZones: [
       { id: newId('nogo'), x: 7400, y: 3550, w: 500, h: 700 },        // WC pan + cistern
     ],
-    pattern: 'serpentine', finish: 'tile',
+    doors: [{ id: newId('door'), side: 'w', center: 0.85, width: 700 }],
+    pattern: 'serpentine', finish: 'tile', zoneCount: 1,
   });
   state.manifold = { x: 5500, y: 3450 };
   state.selection = { type: null, id: null };

@@ -41,6 +41,7 @@
           <button class="tool" data-mode="select" title="Select / move">↖ Select</button>
           <button class="tool" data-mode="draw-room" title="Draw a room">▭ Room</button>
           <button class="tool" data-mode="edit-walls" title="Toggle wall external/internal">┘ Wall</button>
+          <button class="tool" data-mode="add-door" title="Tap a wall to add a door">⌷ Door</button>
           <button class="tool" data-mode="place-manifold" title="Place manifold">◉ Manifold</button>
           <button class="tool" data-mode="draw-nogo" title="Draw no-go zone">▨ No-Go</button>
           <button class="tool" data-mode="delete" title="Delete on click">✕ Delete</button>
@@ -92,6 +93,9 @@
               <option value="carpet">Carpet</option>
               <option value="vinyl">Vinyl / LVT</option>
             </select>
+          </label>
+          <label>Zones in this room
+            <input id="room-zones" type="number" value="1" min="1" max="6" step="1" />
           </label>
           <fieldset class="walls-fieldset">
             <legend>Walls (external?)</legend>

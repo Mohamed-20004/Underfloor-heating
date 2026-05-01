@@ -2,7 +2,18 @@
 // Each generator returns an array of {x, y} points in millimetres. The
 // returned polyline is later smoothed at corners for rendering and length.
 
-import { insetRect, longestExternalWall, segmentHitsNoGo } from './geometry.js';
+import { insetRect, insetRectPerSide, longestExternalWall, segmentHitsNoGo } from './geometry.js';
+
+// Per-side inset for a room: zero for sub-zone partitions (so pipes from
+// adjacent zones meet at the boundary), full setback otherwise.
+function setbackInsets(room, setback) {
+  const sides = ['n', 'e', 's', 'w'];
+  const out = {};
+  for (const k of sides) {
+    out[k] = room.walls[k] === 'partition' ? 0 : setback;
+  }
+  return out;
+}
 
 // Public entry point. Picks the generator based on room.pattern.
 export function generateRoomPath(room, config) {
@@ -21,7 +32,7 @@ function generateSerpentine(room, config) {
   const ext = longestExternalWall(room);
   if (!ext) return [];
 
-  const inner = insetRect({ x: room.x, y: room.y, w: room.w, h: room.h }, wallSetback);
+  const inner = insetRectPerSide({ x: room.x, y: room.y, w: room.w, h: room.h }, setbackInsets(room, wallSetback));
   if (inner.w <= 0 || inner.h <= 0) return [];
 
   const horizontalSpine = ext.side === 'n' || ext.side === 's';
@@ -163,7 +174,7 @@ function subtractNoGo(a, b, horizontal, noGo) {
 
 function generateBifilar(room, config) {
   const { wallSetback, edgeSpacing, pipeSpacing } = config;
-  const inner = insetRect({ x: room.x, y: room.y, w: room.w, h: room.h }, wallSetback);
+  const inner = insetRectPerSide({ x: room.x, y: room.y, w: room.w, h: room.h }, setbackInsets(room, wallSetback));
   if (inner.w <= 4 * pipeSpacing || inner.h <= 4 * pipeSpacing) {
     // Room is too tight for a meaningful bifilar — fall back to serpentine.
     return generateSerpentine(room, config);
