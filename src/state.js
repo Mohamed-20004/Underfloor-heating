@@ -1,0 +1,192 @@
+// state.js — central application state and small pub/sub.
+// Coordinates and dimensions are in millimetres throughout.
+
+const listeners = new Set();
+
+export const state = {
+  project: {
+    title: 'Untitled Project',
+    client: '',
+    projectNumber: 'UFH-001',
+    date: new Date().toISOString().slice(0, 10),
+    scale: 50,
+  },
+  config: {
+    pipeSpacing: 200,
+    edgeSpacing: 100,
+    wallSetback: 100,
+    edgeZoneWidth: 1000,
+    maxLoopLength: 100000,
+    minBendRadius: 80,
+    pipeOD: 16,
+    wastageFactor: 1.08,
+  },
+  rooms: [],
+  manifold: null,
+  loops: [],
+  warnings: [],
+  selection: { type: null, id: null },
+  mode: 'select',
+  view: { zoom: 0.08, panX: 60, panY: 60 },
+};
+
+let nextId = 1;
+export function newId(prefix) { return `${prefix}-${nextId++}`; }
+
+export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+export function emit() { for (const fn of listeners) fn(state); }
+
+export function setMode(mode) {
+  state.mode = mode;
+  emit();
+}
+
+export function selectRoom(id) {
+  state.selection = { type: 'room', id };
+  emit();
+}
+export function clearSelection() {
+  state.selection = { type: null, id: null };
+  emit();
+}
+
+export function addRoom(rect) {
+  const room = {
+    id: newId('room'),
+    name: `ROOM ${state.rooms.length + 1}`,
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    w: Math.round(rect.w),
+    h: Math.round(rect.h),
+    walls: { n: 'external', e: 'internal', s: 'internal', w: 'external' },
+    noGoZones: [],
+    pattern: 'serpentine',
+    finish: 'tile',
+  };
+  state.rooms.push(room);
+  state.selection = { type: 'room', id: room.id };
+  emit();
+  return room;
+}
+
+export function updateRoom(id, patch) {
+  const r = state.rooms.find(r => r.id === id);
+  if (!r) return;
+  Object.assign(r, patch);
+  emit();
+}
+
+export function deleteRoom(id) {
+  const idx = state.rooms.findIndex(r => r.id === id);
+  if (idx >= 0) state.rooms.splice(idx, 1);
+  if (state.selection.id === id) clearSelection();
+  emit();
+}
+
+export function toggleWall(roomId, side) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  r.walls[side] = r.walls[side] === 'external' ? 'internal' : 'external';
+  emit();
+}
+
+export function addNoGo(roomId, rect) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  r.noGoZones.push({
+    id: newId('nogo'),
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    w: Math.round(rect.w),
+    h: Math.round(rect.h),
+  });
+  emit();
+}
+
+export function deleteNoGo(roomId, nogoId) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  r.noGoZones = r.noGoZones.filter(z => z.id !== nogoId);
+  emit();
+}
+
+export function setManifold(point) {
+  state.manifold = { x: Math.round(point.x), y: Math.round(point.y) };
+  emit();
+}
+
+export function setLoops(loops, warnings) {
+  state.loops = loops;
+  state.warnings = warnings || [];
+  emit();
+}
+
+export function clearLoops() {
+  state.loops = [];
+  state.warnings = [];
+  emit();
+}
+
+export function clearAll() {
+  state.rooms = [];
+  state.manifold = null;
+  state.loops = [];
+  state.warnings = [];
+  state.selection = { type: null, id: null };
+  emit();
+}
+
+export function loadSample() {
+  state.rooms = [];
+  state.loops = [];
+  state.warnings = [];
+  // A modest cottage-style ground floor: kitchen, dining, living, hall, WC.
+  // Coordinates in millimetres.
+  state.rooms.push({
+    id: newId('room'), name: 'KITCHEN',
+    x: 0, y: 0, w: 4500, h: 3500,
+    walls: { n: 'external', e: 'internal', s: 'internal', w: 'external' },
+    noGoZones: [
+      { id: newId('nogo'), x: 0, y: 0, w: 4500, h: 600 },           // run of units along north wall
+      { id: newId('nogo'), x: 0, y: 600, w: 600, h: 1800 },          // tall units against west wall
+    ],
+    pattern: 'serpentine', finish: 'tile',
+  });
+  state.rooms.push({
+    id: newId('room'), name: 'DINING',
+    x: 4500, y: 0, w: 3500, h: 3500,
+    walls: { n: 'external', e: 'external', s: 'internal', w: 'internal' },
+    noGoZones: [],
+    pattern: 'serpentine', finish: 'engineered',
+  });
+  state.rooms.push({
+    id: newId('room'), name: 'LIVING',
+    x: 0, y: 3500, w: 5500, h: 4500,
+    walls: { s: 'external', w: 'external', n: 'internal', e: 'internal' },
+    noGoZones: [
+      { id: newId('nogo'), x: 1800, y: 3500, w: 1400, h: 400 },       // fireplace hearth
+    ],
+    pattern: 'bifilar', finish: 'carpet',
+  });
+  state.rooms.push({
+    id: newId('room'), name: 'HALL',
+    x: 5500, y: 3500, w: 1800, h: 4500,
+    walls: { s: 'external', n: 'internal', e: 'internal', w: 'internal' },
+    noGoZones: [
+      { id: newId('nogo'), x: 5500, y: 5800, w: 1800, h: 1500 },     // stairs
+    ],
+    pattern: 'hybrid', finish: 'tile',
+  });
+  state.rooms.push({
+    id: newId('room'), name: 'WC',
+    x: 7300, y: 3500, w: 700, h: 1800,
+    walls: { e: 'external', n: 'internal', s: 'internal', w: 'internal' },
+    noGoZones: [
+      { id: newId('nogo'), x: 7400, y: 3550, w: 500, h: 700 },        // WC pan + cistern
+    ],
+    pattern: 'serpentine', finish: 'tile',
+  });
+  state.manifold = { x: 5500, y: 3450 };
+  state.selection = { type: null, id: null };
+  emit();
+}

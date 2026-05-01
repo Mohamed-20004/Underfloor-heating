@@ -1,0 +1,7 @@
+{
+  "name": "ufh-mapper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Underfloor heating layout designer — pure ES modules, no build step."
+}
