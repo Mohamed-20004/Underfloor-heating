@@ -1,7 +1,8 @@
 // main.js — wire DOM controls to state, render, and export.
 
 import { state, setMode, subscribe, emit, loadSample, clearAll, updateRoom,
-  toggleWall, setLoops, clearLoops } from './state.js';
+  toggleWall, setLoops, clearLoops, setTracingImage, updateTracingImage,
+  removeTracingImage } from './state.js';
 import { initRenderer, render, fitToContent, applyView, setViewport } from './render.js';
 import { initEditor, resetCustomPolygon } from './editor.js';
 import { generateLoops } from './loops.js';
@@ -69,12 +70,52 @@ function toolHint(mode) {
     case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
     case 'place-manifold': return 'Tap anywhere to place the manifold.';
     case 'draw-nogo': return 'Drag inside a room to add a no-go zone.';
+    case 'move-image': return 'Drag the tracing image to position it. Drag the small square at the bottom-right corner to resize.';
     case 'delete': return 'Tap a vertex to merge walls, or a room / door / no-go to delete.';
     default: return '';
   }
 }
 
 // Top bar buttons.
+// Tracing image: load a file, then expose width / opacity controls.
+$('#trace-file').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const src = ev.target.result;
+    const probe = new Image();
+    probe.onload = () => {
+      setTracingImage({
+        src,
+        naturalWidth: probe.naturalWidth,
+        naturalHeight: probe.naturalHeight,
+        widthMM: 10000, // default to 10 m wide; user adjusts via the slider
+      });
+      setStatus('Image loaded. Use the Move Image tool to position it, then trace your rooms over it.');
+    };
+    probe.src = src;
+  };
+  reader.readAsDataURL(file);
+});
+
+$('#trace-width').addEventListener('input', () => {
+  const m = parseFloat($('#trace-width').value);
+  if (!Number.isFinite(m) || m <= 0) return;
+  updateTracingImage({ w: m * 1000 });
+});
+
+$('#trace-opacity').addEventListener('input', () => {
+  const pct = parseInt($('#trace-opacity').value, 10);
+  updateTracingImage({ opacity: pct / 100 });
+});
+
+$('#trace-remove').addEventListener('click', () => {
+  removeTracingImage();
+  $('#trace-file').value = '';
+  setStatus('Tracing image removed.');
+});
+
 $('#btn-sample').addEventListener('click', () => {
   loadSample();
   setStatus('Sample plan loaded. Click "Generate Layout" to produce pipework.');
@@ -180,6 +221,7 @@ for (const side of ['n', 'e', 's', 'w']) {
 subscribe(() => {
   syncToolbarActive();
   syncRoomPanel();
+  syncTracingPanel();
   render();
   syncSchedule();
   syncCalculations();
@@ -187,6 +229,24 @@ subscribe(() => {
   syncZoomLabel();
   syncCanvasCursor();
 });
+
+function syncTracingPanel() {
+  const img = state.tracingImage;
+  const controls = $('#trace-controls');
+  if (!img) {
+    controls.hidden = true;
+    return;
+  }
+  controls.hidden = false;
+  const widthEl = $('#trace-width');
+  if (document.activeElement !== widthEl) {
+    widthEl.value = (img.w / 1000).toFixed(2);
+  }
+  const opEl = $('#trace-opacity');
+  if (document.activeElement !== opEl) {
+    opEl.value = Math.round((img.opacity ?? 0.5) * 100);
+  }
+}
 
 function syncToolbarActive() {
   $$('.tool').forEach(b => b.classList.toggle('active', b.dataset.mode === state.mode));

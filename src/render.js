@@ -13,7 +13,7 @@ export function initRenderer(svgEl) {
   canvas = svgEl;
   // Build persistent layer groups so we can re-render without thrashing.
   canvas.innerHTML = '';
-  for (const name of ['background', 'rooms', 'walls', 'nogo', 'pipes', 'tails', 'manifold', 'labels', 'preview', 'title-block']) {
+  for (const name of ['background', 'trace', 'rooms', 'walls', 'nogo', 'pipes', 'tails', 'manifold', 'labels', 'preview', 'title-block']) {
     const g = document.createElementNS(SVG_NS, 'g');
     g.setAttribute('data-layer', name);
     canvas.appendChild(g);
@@ -76,6 +76,7 @@ export function render() {
   if (!canvas) return;
   applyView();
   drawBackground();
+  drawTracingImage();
   drawRooms();
   drawWalls();
   drawNoGo();
@@ -159,6 +160,37 @@ function drawBackground() {
       }, layers.background).textContent = `${y / 1000} m`;
     }
   }
+}
+
+function drawTracingImage() {
+  clear(layers.trace);
+  const img = state.tracingImage;
+  if (!img || !img.src) return;
+  // SVG image element with absolute world coords. preserveAspectRatio="none"
+  // would let the user squash the image, but we keep aspect ratio locked via
+  // state.updateTracingImage so width changes scale height.
+  const el = svg('image', {
+    x: img.x, y: img.y, width: img.w, height: img.h,
+    href: img.src, opacity: img.opacity ?? 0.5,
+    preserveAspectRatio: 'none',
+    'pointer-events': state.mode === 'move-image' ? 'auto' : 'none',
+    'data-trace-image': '1',
+  }, layers.trace);
+  // When the user is in Move Image mode, draw a dashed outline and a corner
+  // resize handle so they have a clear visual target.
+  if (state.mode === 'move-image') {
+    svg('rect', {
+      x: img.x, y: img.y, width: img.w, height: img.h,
+      class: 'trace-outline',
+      'pointer-events': 'none',
+    }, layers.trace);
+    svg('rect', {
+      x: img.x + img.w - 200, y: img.y + img.h - 200, width: 400, height: 400,
+      class: 'trace-handle',
+      'data-trace-handle': 'corner',
+    }, layers.trace);
+  }
+  return el;
 }
 
 function drawRooms() {

@@ -2,7 +2,8 @@
 // mode-specific actions to the state module. Pan/zoom is built in.
 
 import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
-  addDoor, deleteDoor, selectRoom, clearSelection, setManifold, toggleWall, emit } from './state.js';
+  addDoor, deleteDoor, selectRoom, clearSelection, setManifold, toggleWall, emit,
+  updateTracingImage } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -12,6 +13,8 @@ let panStart = null;
 let onStatus = () => {};
 // Polygon-drawing buffer: vertices accumulated by the Custom Room tool.
 let customVerts = null;
+// Tracing-image drag state: { mode: 'move'|'resize', startX, startY, imgX0, imgY0, imgW0 }.
+let imageDrag = null;
 
 export function initEditor(canvasEl, opts = {}) {
   canvas = canvasEl;
@@ -44,6 +47,21 @@ function onPointerDown(e) {
   const sp = { x: snap(wp.x), y: snap(wp.y) };
 
   switch (state.mode) {
+    case 'move-image': {
+      if (!state.tracingImage) {
+        onStatus('Load an image first using "Choose image" in the left panel.');
+        break;
+      }
+      const img = state.tracingImage;
+      const handle = e.target && e.target.dataset && e.target.dataset.traceHandle;
+      if (handle === 'corner') {
+        imageDrag = { mode: 'resize', startX: wp.x, startY: wp.y, imgX0: img.x, imgY0: img.y, imgW0: img.w };
+      } else {
+        imageDrag = { mode: 'move', startX: wp.x, startY: wp.y, imgX0: img.x, imgY0: img.y };
+      }
+      canvas.setPointerCapture(e.pointerId);
+      break;
+    }
     case 'draw-room':
       dragStart = sp;
       canvas.setPointerCapture(e.pointerId);
@@ -164,6 +182,17 @@ function onPointerMove(e) {
     applyView();
     return;
   }
+  if (imageDrag) {
+    const dx = wp.x - imageDrag.startX;
+    const dy = wp.y - imageDrag.startY;
+    if (imageDrag.mode === 'move') {
+      updateTracingImage({ x: imageDrag.imgX0 + dx, y: imageDrag.imgY0 + dy });
+    } else if (imageDrag.mode === 'resize') {
+      const newW = Math.max(500, imageDrag.imgW0 + dx);
+      updateTracingImage({ w: newW });
+    }
+    return;
+  }
   if (!dragStart) return;
   dragEnd = { x: snap(wp.x), y: snap(wp.y) };
   showPreviewRect({
@@ -175,6 +204,11 @@ function onPointerMove(e) {
 function onPointerUp(e) {
   if (panStart) {
     panStart = null;
+    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    return;
+  }
+  if (imageDrag) {
+    imageDrag = null;
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
     return;
   }

@@ -28,6 +28,10 @@ export const state = {
   selection: { type: null, id: null },
   mode: 'select',
   view: { zoom: 0.08, panX: 60, panY: 60 },
+  // Tracing image (a floor-plan photo or PDF page rasterised) shown beneath
+  // the rooms layer at user-set opacity and size, used to draw the plan over
+  // it. Set via setTracingImage; null when none is loaded.
+  tracingImage: null,
 };
 
 let nextId = 1;
@@ -180,6 +184,40 @@ export function deleteVertex(roomId, vertexIndex) {
 
 export function setManifold(point) {
   state.manifold = { x: Math.round(point.x), y: Math.round(point.y) };
+  emit();
+}
+
+// Tracing image actions. The image is stored as a data URL so it persists in
+// memory across edits but is not written to localStorage (data URLs of typical
+// floor-plan photos can exceed the 5 MB localStorage cap).
+export function setTracingImage({ src, naturalWidth, naturalHeight, widthMM = 10000 }) {
+  const ar = naturalHeight / naturalWidth || 1;
+  state.tracingImage = {
+    src,
+    naturalWidth,
+    naturalHeight,
+    x: 0,
+    y: 0,
+    w: widthMM,
+    h: widthMM * ar,
+    opacity: 0.5,
+  };
+  emit();
+}
+
+export function updateTracingImage(patch) {
+  if (!state.tracingImage) return;
+  Object.assign(state.tracingImage, patch);
+  // Keep the aspect ratio if width is set explicitly.
+  if (patch.w !== undefined) {
+    const ar = state.tracingImage.naturalHeight / state.tracingImage.naturalWidth || 1;
+    state.tracingImage.h = state.tracingImage.w * ar;
+  }
+  emit();
+}
+
+export function removeTracingImage() {
+  state.tracingImage = null;
   emit();
 }
 

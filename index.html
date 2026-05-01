@@ -45,9 +45,27 @@
           <button class="tool" data-mode="add-door" title="Tap a wall to add a door">⌷ Door</button>
           <button class="tool" data-mode="place-manifold" title="Place manifold">◉ Manifold</button>
           <button class="tool" data-mode="draw-nogo" title="Draw no-go zone">▨ No-Go</button>
+          <button class="tool" data-mode="move-image" title="Drag the tracing image to position; corner handle resizes">▣ Move Image</button>
           <button class="tool" data-mode="delete" title="Delete on click">✕ Delete</button>
         </div>
         <p class="hint" id="tool-hint">Pick a tool above to begin.</p>
+      </section>
+
+      <section class="panel">
+        <h3>Tracing Image</h3>
+        <p class="hint">Load a floor-plan photo, scan, or PDF page to draw over.</p>
+        <input id="trace-file" type="file" accept="image/*" style="margin-bottom:8px;" />
+        <div id="trace-controls" hidden>
+          <label>Width
+            <input id="trace-width" type="number" value="10" min="0.5" max="60" step="0.1" />
+            <span class="hint">m (height auto-scales)</span>
+          </label>
+          <label>Opacity
+            <input id="trace-opacity" type="range" min="0" max="100" value="50" />
+          </label>
+          <p class="hint" style="margin-top:6px;">Use the <strong>▣ Move Image</strong> tool to drag it on the canvas. Drag the small square at the bottom-right corner to resize.</p>
+          <button id="trace-remove" class="btn" style="width:100%;margin-top:6px;">Remove image</button>
+        </div>
       </section>
 
       <section class="panel">
