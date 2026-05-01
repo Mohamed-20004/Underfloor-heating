@@ -177,7 +177,26 @@ export function toggleWall(roomId, edgeIndex) {
   const i = Number(edgeIndex);
   if (Number.isNaN(i) || i < 0 || i >= r.edgeKinds.length) return;
   pushUndo();
-  r.edgeKinds[i] = r.edgeKinds[i] === 'external' ? 'internal' : 'external';
+  // 'hidden' is a sticky state — toggling makes it external again.
+  if (r.edgeKinds[i] === 'hidden') {
+    r.edgeKinds[i] = 'external';
+  } else {
+    r.edgeKinds[i] = r.edgeKinds[i] === 'external' ? 'internal' : 'external';
+  }
+  emit();
+}
+
+// Mark a polygon edge as hidden — the wall disappears visually (no line, no
+// length label, no doors rendered) but the polygon shape is preserved so the
+// pipe engine still treats the room as a closed area. Useful for "knock-
+// through" openings between rooms.
+export function hideRoomEdge(roomId, edgeIndex) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  const i = Number(edgeIndex);
+  if (Number.isNaN(i) || i < 0 || i >= r.edgeKinds.length) return;
+  pushUndo();
+  r.edgeKinds[i] = 'hidden';
   emit();
 }
 

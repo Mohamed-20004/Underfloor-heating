@@ -57,11 +57,14 @@ function setbacksForRoom(room, wallSetback) {
   const def = { n: wallSetback, e: wallSetback, s: wallSetback, w: wallSetback };
   if (!isAxisAlignedRect(room.vertices)) return def;
   const ek = room.edgeKinds || [];
+  // Partition edges (sub-zone boundaries) and hidden edges ("knock-through"
+  // openings) both use zero setback so pipes meet the boundary cleanly.
+  const noInset = k => k === 'partition' || k === 'hidden';
   return {
-    n: ek[0] === 'partition' ? 0 : wallSetback,
-    e: ek[1] === 'partition' ? 0 : wallSetback,
-    s: ek[2] === 'partition' ? 0 : wallSetback,
-    w: ek[3] === 'partition' ? 0 : wallSetback,
+    n: noInset(ek[0]) ? 0 : wallSetback,
+    e: noInset(ek[1]) ? 0 : wallSetback,
+    s: noInset(ek[2]) ? 0 : wallSetback,
+    w: noInset(ek[3]) ? 0 : wallSetback,
   };
 }
 

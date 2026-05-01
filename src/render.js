@@ -197,8 +197,11 @@ function drawTracingImage() {
 function drawFreeWalls() {
   clear(layers['free-walls']);
   const walls = state.walls || [];
+  const sel = state.selection;
   for (const w of walls) {
-    const cls = w.kind === 'external' ? 'wall external' : 'wall internal';
+    const isSelected = sel.type === 'free-wall' && sel.wallId === w.id;
+    const baseCls = w.kind === 'external' ? 'wall external' : 'wall internal';
+    const cls = baseCls + (isSelected ? ' selected' : '');
     const dx = w.b.x - w.a.x, dy = w.b.y - w.a.y;
     const len = Math.hypot(dx, dy);
     const seg = { a: w.a, b: w.b, length: len };
@@ -297,14 +300,18 @@ function drawRooms() {
 
 function drawWalls() {
   clear(layers.walls);
+  const sel = state.selection;
   for (const room of state.rooms) {
     const vs = room.vertices || [];
     const kinds = room.edgeKinds || [];
     for (let i = 0; i < vs.length; i++) {
+      // Skip hidden walls entirely — no line, no length label, no doors.
+      if (kinds[i] === 'hidden') continue;
       const a = vs[i], b = vs[(i + 1) % vs.length];
       const len = Math.hypot(b.x - a.x, b.y - a.y);
       const seg = { a, b, length: len };
-      const cls = wallClass(kinds[i]);
+      const isSelected = sel.type === 'wall' && sel.roomId === room.id && sel.edgeIndex === i;
+      const cls = wallClass(kinds[i]) + (isSelected ? ' selected' : '');
       const doors = (room.doors || []).filter(d => d.edgeIndex === i);
       const subSegs = breakWallByDoors(seg, doors);
       for (const sub of subSegs) {
@@ -318,8 +325,11 @@ function drawWalls() {
       // Length label, offset outward from the wall midpoint.
       drawWallLengthLabel(room, vs, i, len);
     }
-    // Doors and vertex handles.
-    for (const d of room.doors || []) drawDoor(room, d);
+    // Doors (skip those whose parent edge is hidden) and vertex handles.
+    for (const d of room.doors || []) {
+      if (kinds[d.edgeIndex] === 'hidden') continue;
+      drawDoor(room, d);
+    }
     const showHandles = state.selection.id === room.id || state.mode === 'merge-walls';
     if (showHandles) {
       for (let v = 0; v < vs.length; v++) drawVertexHandle(room, v, vs[v]);

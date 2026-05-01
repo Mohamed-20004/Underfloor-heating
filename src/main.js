@@ -2,7 +2,8 @@
 
 import { state, setMode, subscribe, emit, loadSample, clearAll, updateRoom,
   toggleWall, setLoops, clearLoops, setTracingImage, updateTracingImage,
-  removeTracingImage, undo, redo, canUndo, canRedo, toggleFreeWallKind } from './state.js';
+  removeTracingImage, undo, redo, canUndo, canRedo, toggleFreeWallKind,
+  hideRoomEdge, deleteFreeWall, clearSelection } from './state.js';
 import { initRenderer, render, fitToContent, applyView, setViewport } from './render.js';
 import { initEditor, resetCustomPolygon, resetFreeWall } from './editor.js';
 import { generateLoops } from './loops.js';
@@ -273,6 +274,17 @@ wallKindEl.addEventListener('change', () => {
   } else if (sel.type === 'wall' && sel.roomId !== undefined) {
     toggleWall(sel.roomId, sel.edgeIndex);
   }
+});
+$('#wall-delete').addEventListener('click', () => {
+  const sel = state.selection;
+  if (sel.type === 'free-wall') {
+    deleteFreeWall(sel.wallId);
+    setStatus('Wall deleted.');
+  } else if (sel.type === 'wall' && sel.roomId !== undefined) {
+    hideRoomEdge(sel.roomId, sel.edgeIndex);
+    setStatus('Wall removed from room.');
+  }
+  clearSelection();
 });
 function syncWallPanel() {
   const sel = state.selection;

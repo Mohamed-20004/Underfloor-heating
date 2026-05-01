@@ -3,8 +3,8 @@
 
 import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
   addDoor, deleteDoor, addFreeWall, deleteFreeWall, addFreeWallDoor, deleteFreeWallDoor,
-  selectRoom, clearSelection, setManifold, toggleWall, emit, updateTracingImage,
-  moveRoomBy, moveFreeWallBy, setDoorCenter } from './state.js';
+  selectRoom, clearSelection, setManifold, toggleWall, hideRoomEdge, emit,
+  updateTracingImage, moveRoomBy, moveFreeWallBy, setDoorCenter } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -319,12 +319,24 @@ function onPointerDown(e) {
           onStatus('Removed wall.');
           break;
         }
+        if (target.dataset.edgeIndex !== undefined && target.dataset.roomId) {
+          // Polygon edge tap → hide the wall (room shape is preserved).
+          hideRoomEdge(target.dataset.roomId, target.dataset.edgeIndex);
+          onStatus('Wall removed from room.');
+          break;
+        }
       }
-      // Fall back to nearest free wall within tap tolerance, then to a room.
+      // Fall back: nearest free wall, then nearest polygon edge, then room.
       const nearestFree = nearestFreeWall(wp, 400);
       if (nearestFree) {
         deleteFreeWall(nearestFree.id);
         onStatus('Removed wall.');
+        break;
+      }
+      const re = nearestRoomEdge(wp, 400);
+      if (re) {
+        hideRoomEdge(re.roomId, re.edgeIndex);
+        onStatus('Wall removed from room.');
         break;
       }
       const room = roomAt(wp);

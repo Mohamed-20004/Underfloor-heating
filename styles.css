@@ -230,6 +230,7 @@ body {
 .wall.internal { stroke: #6b7587; stroke-width: 50; stroke-dasharray: 0; }
 .wall.partition { stroke: #b4bcc8; stroke-width: 30; stroke-dasharray: 60 60; }
 .wall.hover { stroke: var(--primary); }
+.wall.selected { stroke: #f5c126; stroke-width: 110; stroke-dasharray: 0; }
 .wall-length {
   fill: #5a6477;
   font-family: -apple-system, sans-serif;

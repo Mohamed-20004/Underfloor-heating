@@ -165,7 +165,9 @@ export function longestExternalWall(room) {
     const axis = Math.abs(a.x - b.x) < eps ? 'v' : 'h';
     const entry = { edgeIndex: i, wall: { a, b }, len, axis };
     if (kinds[i] === 'external' && len > bestLen) { bestLen = len; best = entry; }
-    if (len > fbLen) { fbLen = len; fbBest = entry; }
+    // Hidden edges shouldn't be candidates for the spine even in the fallback,
+    // because they are conceptually "no wall there".
+    if (kinds[i] !== 'hidden' && len > fbLen) { fbLen = len; fbBest = entry; }
   }
   return best || fbBest;
 }
