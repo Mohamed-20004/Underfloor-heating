@@ -37,6 +37,43 @@ export const state = {
 let nextId = 1;
 export function newId(prefix) { return `${prefix}-${nextId++}`; }
 
+// Undo history. We snapshot only the data the user is editing — rooms,
+// manifold, tracing image — not derived state like loops or warnings.
+const HISTORY_LIMIT = 50;
+const history = [];
+
+function snapshot() {
+  return {
+    rooms: structuredClone(state.rooms),
+    manifold: state.manifold ? { ...state.manifold } : null,
+    tracingImage: state.tracingImage ? { ...state.tracingImage } : null,
+  };
+}
+
+// Call this at the start of every mutating action (before the change). The
+// snapshot represents the state to roll back to when the user hits Undo.
+export function pushUndo() {
+  history.push(snapshot());
+  if (history.length > HISTORY_LIMIT) history.shift();
+}
+
+export function undo() {
+  if (history.length === 0) return false;
+  const last = history.pop();
+  state.rooms = last.rooms;
+  state.manifold = last.manifold;
+  state.tracingImage = last.tracingImage;
+  state.loops = [];
+  state.warnings = [];
+  state.selection = { type: null, id: null };
+  emit();
+  return true;
+}
+
+export function canUndo() { return history.length > 0; }
+
+export function clearHistory() { history.length = 0; }
+
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export function emit() { for (const fn of listeners) fn(state); }
 
@@ -59,6 +96,7 @@ export function clearSelection() {
 // to vertices: edgeKinds[i] is the wall type of the edge from vertices[i] to
 // vertices[(i+1) % N].
 export function addRoom(rect) {
+  pushUndo();
   const vertices = [
     { x: Math.round(rect.x), y: Math.round(rect.y) },
     { x: Math.round(rect.x + rect.w), y: Math.round(rect.y) },
@@ -70,6 +108,7 @@ export function addRoom(rect) {
 
 export function addCustomRoom(vertices) {
   if (!vertices || vertices.length < 3) return null;
+  pushUndo();
   return addRoomFromVertices(vertices, vertices.map(() => 'external'));
 }
 
@@ -94,13 +133,16 @@ function addRoomFromVertices(vertices, edgeKinds) {
 export function updateRoom(id, patch) {
   const r = state.rooms.find(r => r.id === id);
   if (!r) return;
+  pushUndo();
   Object.assign(r, patch);
   emit();
 }
 
 export function deleteRoom(id) {
   const idx = state.rooms.findIndex(r => r.id === id);
-  if (idx >= 0) state.rooms.splice(idx, 1);
+  if (idx < 0) return;
+  pushUndo();
+  state.rooms.splice(idx, 1);
   if (state.selection.id === id) clearSelection();
   emit();
 }
@@ -110,6 +152,7 @@ export function toggleWall(roomId, edgeIndex) {
   if (!r) return;
   const i = Number(edgeIndex);
   if (Number.isNaN(i) || i < 0 || i >= r.edgeKinds.length) return;
+  pushUndo();
   r.edgeKinds[i] = r.edgeKinds[i] === 'external' ? 'internal' : 'external';
   emit();
 }
@@ -117,6 +160,7 @@ export function toggleWall(roomId, edgeIndex) {
 export function addNoGo(roomId, rect) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r) return;
+  pushUndo();
   r.noGoZones.push({
     id: newId('nogo'),
     x: Math.round(rect.x),
@@ -130,6 +174,7 @@ export function addNoGo(roomId, rect) {
 export function deleteNoGo(roomId, nogoId) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r) return;
+  pushUndo();
   r.noGoZones = r.noGoZones.filter(z => z.id !== nogoId);
   emit();
 }
@@ -141,6 +186,7 @@ export function addDoor(roomId, edgeIndex, center, width = 800) {
   if (!r) return;
   if (!r.doors) r.doors = [];
   const c = Math.max(0.05, Math.min(0.95, center));
+  pushUndo();
   r.doors.push({
     id: newId('door'),
     edgeIndex: Number(edgeIndex),
@@ -153,6 +199,7 @@ export function addDoor(roomId, edgeIndex, center, width = 800) {
 export function deleteDoor(roomId, doorId) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r || !r.doors) return;
+  pushUndo();
   r.doors = r.doors.filter(d => d.id !== doorId);
   emit();
 }
@@ -165,6 +212,7 @@ export function deleteVertex(roomId, vertexIndex) {
   if (!r || !r.vertices || r.vertices.length <= 3) return;
   const i = Number(vertexIndex);
   if (Number.isNaN(i) || i < 0 || i >= r.vertices.length) return;
+  pushUndo();
   const prevEdge = (i - 1 + r.edgeKinds.length) % r.edgeKinds.length;
   r.vertices.splice(i, 1);
   // Remove the outgoing edge of the deleted vertex; the incoming edge survives.
@@ -183,6 +231,7 @@ export function deleteVertex(roomId, vertexIndex) {
 }
 
 export function setManifold(point) {
+  pushUndo();
   state.manifold = { x: Math.round(point.x), y: Math.round(point.y) };
   emit();
 }
@@ -191,6 +240,7 @@ export function setManifold(point) {
 // memory across edits but is not written to localStorage (data URLs of typical
 // floor-plan photos can exceed the 5 MB localStorage cap).
 export function setTracingImage({ src, naturalWidth, naturalHeight, widthMM = 10000 }) {
+  pushUndo();
   const ar = naturalHeight / naturalWidth || 1;
   state.tracingImage = {
     src,
@@ -205,10 +255,14 @@ export function setTracingImage({ src, naturalWidth, naturalHeight, widthMM = 10
   emit();
 }
 
+let lastTraceUpdateAt = 0;
 export function updateTracingImage(patch) {
   if (!state.tracingImage) return;
+  // Coalesce rapid-fire calls (drag, slider) into one undo entry per gesture.
+  const now = Date.now();
+  if (now - lastTraceUpdateAt > 500) pushUndo();
+  lastTraceUpdateAt = now;
   Object.assign(state.tracingImage, patch);
-  // Keep the aspect ratio if width is set explicitly.
   if (patch.w !== undefined) {
     const ar = state.tracingImage.naturalHeight / state.tracingImage.naturalWidth || 1;
     state.tracingImage.h = state.tracingImage.w * ar;
@@ -217,6 +271,7 @@ export function updateTracingImage(patch) {
 }
 
 export function removeTracingImage() {
+  pushUndo();
   state.tracingImage = null;
   emit();
 }
@@ -234,6 +289,7 @@ export function clearLoops() {
 }
 
 export function clearAll() {
+  pushUndo();
   state.rooms = [];
   state.manifold = null;
   state.loops = [];
@@ -269,6 +325,7 @@ function rectRoom({ name, x, y, w, h, walls, doors = [], noGoZones = [], pattern
 }
 
 export function loadSample() {
+  pushUndo();
   state.rooms = [];
   state.loops = [];
   state.warnings = [];

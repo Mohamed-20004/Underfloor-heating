@@ -129,6 +129,16 @@ function onPointerDown(e) {
       onStatus(`Added door on ${room.name} (edge ${placement.edgeIndex}).`);
       break;
     }
+    case 'merge-walls': {
+      // Tap a vertex to merge its two adjacent walls into one.
+      if (e.target && e.target.dataset && e.target.dataset.vertexId !== undefined) {
+        deleteVertex(e.target.dataset.roomId, e.target.dataset.vertexId);
+        onStatus('Walls merged.');
+        break;
+      }
+      onStatus('Tap a vertex (small white circle) to merge the two walls meeting there.');
+      break;
+    }
     case 'delete': {
       const target = e.target;
       if (target && target.dataset) {

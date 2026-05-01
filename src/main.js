@@ -2,7 +2,7 @@
 
 import { state, setMode, subscribe, emit, loadSample, clearAll, updateRoom,
   toggleWall, setLoops, clearLoops, setTracingImage, updateTracingImage,
-  removeTracingImage } from './state.js';
+  removeTracingImage, undo, canUndo } from './state.js';
 import { initRenderer, render, fitToContent, applyView, setViewport } from './render.js';
 import { initEditor, resetCustomPolygon } from './editor.js';
 import { generateLoops } from './loops.js';
@@ -68,6 +68,7 @@ function toolHint(mode) {
     case 'draw-custom': return 'Tap each corner in turn (edges snap to horizontal/vertical). Tap near the first corner to close.';
     case 'edit-walls': return 'Tap on (or near) a wall to toggle external/internal.';
     case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
+    case 'merge-walls': return 'Tap a vertex (white circle) to merge the two walls meeting there into one.';
     case 'place-manifold': return 'Tap anywhere to place the manifold.';
     case 'draw-nogo': return 'Drag inside a room to add a no-go zone.';
     case 'move-image': return 'Drag the tracing image to position it. Drag the small square at the bottom-right corner to resize.';
@@ -114,6 +115,21 @@ $('#trace-remove').addEventListener('click', () => {
   removeTracingImage();
   $('#trace-file').value = '';
   setStatus('Tracing image removed.');
+});
+
+$('#btn-undo').addEventListener('click', () => {
+  if (undo()) setStatus('Undone.');
+});
+
+// Cmd+Z (Mac, iPad keyboards) and Ctrl+Z (Windows) trigger undo.
+window.addEventListener('keydown', e => {
+  const isUndo = (e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
+  if (!isUndo) return;
+  // Don't intercept undo while the user is typing in a text/number input.
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  e.preventDefault();
+  if (undo()) setStatus('Undone.');
 });
 
 $('#btn-sample').addEventListener('click', () => {
@@ -222,6 +238,7 @@ subscribe(() => {
   syncToolbarActive();
   syncRoomPanel();
   syncTracingPanel();
+  syncUndoButton();
   render();
   syncSchedule();
   syncCalculations();
@@ -229,6 +246,10 @@ subscribe(() => {
   syncZoomLabel();
   syncCanvasCursor();
 });
+
+function syncUndoButton() {
+  $('#btn-undo').disabled = !canUndo();
+}
 
 function syncTracingPanel() {
   const img = state.tracingImage;

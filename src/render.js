@@ -247,7 +247,8 @@ function drawWalls() {
     }
     // Doors and vertex handles.
     for (const d of room.doors || []) drawDoor(room, d);
-    if (state.selection.id === room.id) {
+    const showHandles = state.selection.id === room.id || state.mode === 'merge-walls';
+    if (showHandles) {
       for (let v = 0; v < vs.length; v++) drawVertexHandle(room, v, vs[v]);
     }
   }
