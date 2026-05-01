@@ -31,9 +31,100 @@ export function bbox(points) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
 }
 
-// Bounding box of a room rectangle.
+// Bounding box of a room (polygon-based; falls back to legacy rect fields).
 export function roomBBox(room) {
+  if (room.vertices) return bbox(room.vertices);
   return { x: room.x, y: room.y, w: room.w, h: room.h, cx: room.x + room.w / 2, cy: room.y + room.h / 2 };
+}
+
+// Signed area of a polygon (shoelace). Positive when vertices wind clockwise
+// in screen coordinates (y down). Returned as absolute value in mm².
+export function polygonArea(vertices) {
+  let s = 0;
+  for (let i = 0, n = vertices.length; i < n; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % n];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(s) / 2;
+}
+
+// Length of a single polygon edge i (from vertex i to (i+1)%N).
+export function edgeLength(vertices, i) {
+  const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+// Edge endpoints {a, b} and a midpoint, for a polygon.
+export function edgeEndpoints(vertices, i) {
+  const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+  return { a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+}
+
+// Outward normal (unit vector) of edge i. Assumes clockwise winding so the
+// polygon interior lies to the right of each edge in screen coords (y down).
+export function edgeOutwardNormal(vertices, i) {
+  const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // Right-hand perpendicular (interior on left for CCW; here we have CW so
+  // outward is the LEFT-hand perpendicular).
+  return { x: -dy / len, y: dx / len };
+}
+
+// Even-odd point-in-polygon test (ray cast to the right).
+export function pointInPolygon(p, vertices) {
+  let inside = false;
+  for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+    const vi = vertices[i], vj = vertices[j];
+    const intersect = ((vi.y > p.y) !== (vj.y > p.y)) &&
+      (p.x < (vj.x - vi.x) * (p.y - vi.y) / ((vj.y - vi.y) || eps) + vi.x);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// Intersect a horizontal line y = Y0 with an axis-aligned polygon, returning
+// a list of [xStart, xEnd] interior intervals. Uses the scanline method:
+// collect every vertical edge that straddles Y0, sort the resulting xs, and
+// pair them up. Tangent touches (horizontal edges or vertices exactly on Y0)
+// are filtered to avoid spurious empty intervals.
+export function clipHorizontalLine(y, vertices) {
+  const xs = [];
+  const n = vertices.length;
+  for (let i = 0; i < n; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % n];
+    // Only count vertical edges that actually cross the line.
+    if (Math.abs(a.x - b.x) < eps) {
+      const yMin = Math.min(a.y, b.y), yMax = Math.max(a.y, b.y);
+      if (y > yMin + eps && y < yMax - eps) xs.push(a.x);
+    }
+  }
+  xs.sort((m, n) => m - n);
+  const out = [];
+  for (let i = 0; i + 1 < xs.length; i += 2) {
+    if (xs[i + 1] - xs[i] > 1) out.push([xs[i], xs[i + 1]]);
+  }
+  return out;
+}
+
+// Intersect a vertical line x = X0 with an axis-aligned polygon, returning
+// a list of [yStart, yEnd] interior intervals.
+export function clipVerticalLine(x, vertices) {
+  const ys = [];
+  const n = vertices.length;
+  for (let i = 0; i < n; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % n];
+    if (Math.abs(a.y - b.y) < eps) {
+      const xMin = Math.min(a.x, b.x), xMax = Math.max(a.x, b.x);
+      if (x > xMin + eps && x < xMax - eps) ys.push(a.y);
+    }
+  }
+  ys.sort((m, n) => m - n);
+  const out = [];
+  for (let i = 0; i + 1 < ys.length; i += 2) {
+    if (ys[i + 1] - ys[i] > 1) out.push([ys[i], ys[i + 1]]);
+  }
+  return out;
 }
 
 // Inset a room rectangle by `inset` on each side, returning a smaller rectangle.
@@ -58,48 +149,36 @@ export function insetRectPerSide(rect, insets) {
   };
 }
 
-// Get the four wall segments of a rectangular room, keyed by compass direction.
-export function roomWalls(room) {
-  const x1 = room.x, y1 = room.y, x2 = room.x + room.w, y2 = room.y + room.h;
-  return {
-    n: { a: { x: x1, y: y1 }, b: { x: x2, y: y1 }, dir: 'h' },
-    e: { a: { x: x2, y: y1 }, b: { x: x2, y: y2 }, dir: 'v' },
-    s: { a: { x: x1, y: y2 }, b: { x: x2, y: y2 }, dir: 'h' },
-    w: { a: { x: x1, y: y1 }, b: { x: x1, y: y2 }, dir: 'v' },
-  };
-}
-
-// Identify the longest external wall direction. Returns 'h' (rows run east-west)
-// or 'v' (rows run north-south). The first parallel pipe row will hug this wall.
+// Identify the longest external (or, failing that, longest overall) edge of a
+// polygon room. Returns the edge index, its endpoints, length, and an axis
+// flag: 'h' (horizontal edge → rows run east-west) or 'v' (vertical edge →
+// rows run north-south). The first pipe row will hug this edge.
 export function longestExternalWall(room) {
-  const walls = roomWalls(room);
+  const vs = room.vertices;
+  if (!vs || vs.length < 3) return null;
+  const kinds = room.edgeKinds || [];
   let best = null, bestLen = -1;
-  for (const k of ['n', 'e', 's', 'w']) {
-    if (room.walls[k] !== 'external') continue;
-    const w = walls[k];
-    const len = dist(w.a, w.b);
-    if (len > bestLen) { bestLen = len; best = { side: k, wall: w, len }; }
-  }
-  if (best) return best;
-  // No external walls marked: fall back to longest wall overall.
   let fbBest = null, fbLen = -1;
-  for (const k of ['n', 'e', 's', 'w']) {
-    const w = walls[k];
-    const len = dist(w.a, w.b);
-    if (len > fbLen) { fbLen = len; fbBest = { side: k, wall: w, len }; }
+  for (let i = 0; i < vs.length; i++) {
+    const a = vs[i], b = vs[(i + 1) % vs.length];
+    const len = dist(a, b);
+    const axis = Math.abs(a.x - b.x) < eps ? 'v' : 'h';
+    const entry = { edgeIndex: i, wall: { a, b }, len, axis };
+    if (kinds[i] === 'external' && len > bestLen) { bestLen = len; best = entry; }
+    if (len > fbLen) { fbLen = len; fbBest = entry; }
   }
-  return fbBest;
+  return best || fbBest;
 }
 
-// Distance from a point to the nearest external wall of a room. Used to determine
-// whether a point lies within the edge zone (tighter pipe spacing).
+// Distance from a point to the nearest external edge of a polygon room.
 export function distToNearestExternalWall(p, room) {
+  if (!room.vertices) return Infinity;
   let best = Infinity;
-  const walls = roomWalls(room);
-  for (const k of ['n', 'e', 's', 'w']) {
-    if (room.walls[k] !== 'external') continue;
-    const w = walls[k];
-    const d = pointToSegment(p, w.a, w.b);
+  const kinds = room.edgeKinds || [];
+  for (let i = 0; i < room.vertices.length; i++) {
+    if (kinds[i] !== 'external') continue;
+    const a = room.vertices[i], b = room.vertices[(i + 1) % room.vertices.length];
+    const d = pointToSegment(p, a, b);
     if (d < best) best = d;
   }
   return best;

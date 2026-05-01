@@ -1,8 +1,8 @@
 // editor.js — handles pointer interactions on the SVG canvas and dispatches
 // mode-specific actions to the state module. Pan/zoom is built in.
 
-import { state, addRoom, addNoGo, deleteRoom, deleteNoGo, addDoor, deleteDoor,
-  selectRoom, clearSelection, setManifold, toggleWall, emit } from './state.js';
+import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
+  addDoor, deleteDoor, selectRoom, clearSelection, setManifold, toggleWall, emit } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -10,6 +10,8 @@ let dragStart = null;
 let dragEnd = null;
 let panStart = null;
 let onStatus = () => {};
+// Polygon-drawing buffer: vertices accumulated by the Custom Room tool.
+let customVerts = null;
 
 export function initEditor(canvasEl, opts = {}) {
   canvas = canvasEl;
@@ -21,6 +23,11 @@ export function initEditor(canvasEl, opts = {}) {
   canvas.addEventListener('pointerleave', onPointerUp);
   canvas.addEventListener('wheel', onWheel, { passive: false });
   canvas.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+export function resetCustomPolygon() {
+  customVerts = null;
+  showPreviewPolygon(null);
 }
 
 function snap(v, grid = 50) { return Math.round(v / grid) * grid; }
@@ -41,6 +48,38 @@ function onPointerDown(e) {
       dragStart = sp;
       canvas.setPointerCapture(e.pointerId);
       break;
+    case 'draw-custom': {
+      // Tap-to-place corners. Each new corner snaps so its edges are axis-
+      // aligned with the previous corner. Tap near the start to close.
+      if (!customVerts) customVerts = [];
+      // Snap subsequent corners to be axis-aligned with the previous one.
+      let pt = sp;
+      if (customVerts.length > 0) {
+        const prev = customVerts[customVerts.length - 1];
+        if (Math.abs(pt.x - prev.x) < Math.abs(pt.y - prev.y)) {
+          pt = { x: prev.x, y: pt.y };
+        } else {
+          pt = { x: pt.x, y: prev.y };
+        }
+      }
+      // Closing: tap within snap radius of the first vertex finalises the
+      // polygon. Need at least 4 corners (3 + close).
+      if (customVerts.length >= 3) {
+        const first = customVerts[0];
+        if (Math.hypot(pt.x - first.x, pt.y - first.y) < 200) {
+          // Close — last edge goes from last placed to first.
+          const r = addCustomRoom(customVerts);
+          customVerts = null;
+          if (r) onStatus(`Custom room ${r.name} created with ${r.vertices.length} corners.`);
+          showPreviewPolygon(null);
+          return;
+        }
+      }
+      customVerts.push(pt);
+      onStatus(`Corner ${customVerts.length} added at ${(pt.x / 1000).toFixed(2)}, ${(pt.y / 1000).toFixed(2)} m. Tap near the first corner to close.`);
+      showPreviewPolygon(customVerts);
+      return;
+    }
     case 'draw-nogo': {
       const room = roomAt(wp);
       if (!room) { onStatus('Click and drag inside a room to define a no-go zone.'); return; }
@@ -55,24 +94,38 @@ function onPointerDown(e) {
     case 'edit-walls': {
       const hit = wallAt(e.target);
       if (hit) {
-        toggleWall(hit.roomId, hit.side);
-        onStatus(`Toggled wall: ${hit.roomId} ${hit.side}.`);
+        toggleWall(hit.roomId, hit.edgeIndex);
+        onStatus(`Toggled wall ${hit.edgeIndex} on ${hit.roomId}.`);
+        break;
+      }
+      // Fall-back: nearest edge to the click on the nearest room.
+      const room = roomNearest(wp, 1000);
+      if (!room) break;
+      const placement = nearestEdgeOnRoom(room, wp);
+      if (placement) {
+        toggleWall(room.id, placement.edgeIndex);
+        onStatus(`Toggled wall ${placement.edgeIndex} on ${room.name}.`);
       }
       break;
     }
     case 'add-door': {
       // Pick the closest wall edge of the closest room and place a door there.
-      const room = roomNearest(wp, 800);
+      const room = roomNearest(wp, 1000);
       if (!room) { onStatus('Tap on a room edge to place a door.'); break; }
       const placement = nearestEdgeOnRoom(room, wp);
       if (!placement) break;
-      addDoor(room.id, placement.side, placement.center, 800);
-      onStatus(`Added door on ${room.name} (${placement.side} wall).`);
+      addDoor(room.id, placement.edgeIndex, placement.center, 800);
+      onStatus(`Added door on ${room.name} (edge ${placement.edgeIndex}).`);
       break;
     }
     case 'delete': {
       const target = e.target;
       if (target && target.dataset) {
+        if (target.dataset.vertexId !== undefined && target.dataset.roomId) {
+          deleteVertex(target.dataset.roomId, target.dataset.vertexId);
+          onStatus('Removed vertex (walls merged).');
+          break;
+        }
         if (target.dataset.doorId) {
           deleteDoor(target.dataset.roomId, target.dataset.doorId);
           onStatus('Removed door.');
@@ -178,19 +231,31 @@ function normaliseRect(a, b) {
 }
 
 function roomAt(p) {
-  // Search from last to first so newest rooms (drawn on top) win.
   for (let i = state.rooms.length - 1; i >= 0; i--) {
     const r = state.rooms[i];
-    if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) return r;
+    if (pointInRoom(p, r)) return r;
   }
   return null;
 }
 
+function pointInRoom(p, r) {
+  const vs = r.vertices;
+  if (!vs) return false;
+  let inside = false;
+  for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+    const vi = vs[i], vj = vs[j];
+    const intersect = ((vi.y > p.y) !== (vj.y > p.y)) &&
+      (p.x < (vj.x - vi.x) * (p.y - vi.y) / ((vj.y - vi.y) || 1e-9) + vi.x);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 function wallAt(target) {
   if (!target || !target.dataset) return null;
-  const { roomId, wallSide } = target.dataset;
-  if (!roomId || !wallSide) return null;
-  return { roomId, side: wallSide };
+  const { roomId, edgeIndex } = target.dataset;
+  if (!roomId || edgeIndex === undefined) return null;
+  return { roomId, edgeIndex: Number(edgeIndex) };
 }
 
 // Find the room whose perimeter is closest to point p, within `tolerance` mm.
@@ -204,14 +269,14 @@ function roomNearest(p, tolerance) {
 }
 
 function distToRoomPerimeter(p, r) {
-  // Distance from p to the nearest of the four wall segments.
-  const x1 = r.x, y1 = r.y, x2 = r.x + r.w, y2 = r.y + r.h;
-  return Math.min(
-    pointSegDist(p, x1, y1, x2, y1),
-    pointSegDist(p, x2, y1, x2, y2),
-    pointSegDist(p, x1, y2, x2, y2),
-    pointSegDist(p, x1, y1, x1, y2),
-  );
+  if (!r.vertices) return Infinity;
+  let best = Infinity;
+  for (let i = 0; i < r.vertices.length; i++) {
+    const a = r.vertices[i], b = r.vertices[(i + 1) % r.vertices.length];
+    const d = pointSegDist(p, a.x, a.y, b.x, b.y);
+    if (d < best) best = d;
+  }
+  return best;
 }
 
 function pointSegDist(p, ax, ay, bx, by) {
@@ -223,25 +288,41 @@ function pointSegDist(p, ax, ay, bx, by) {
   return Math.hypot(p.x - cx, p.y - cy);
 }
 
-// Snap a point to the nearest of a room's four wall edges. Returns the side
-// and the fractional centre (0..1) along that wall.
+// Snap a point to the nearest polygon edge of a room. Returns the edge index
+// and the fractional centre (0..1) along that edge.
 function nearestEdgeOnRoom(r, p) {
-  const candidates = [
-    { side: 'n', a: { x: r.x, y: r.y },               b: { x: r.x + r.w, y: r.y } },
-    { side: 'e', a: { x: r.x + r.w, y: r.y },         b: { x: r.x + r.w, y: r.y + r.h } },
-    { side: 's', a: { x: r.x, y: r.y + r.h },         b: { x: r.x + r.w, y: r.y + r.h } },
-    { side: 'w', a: { x: r.x, y: r.y },               b: { x: r.x, y: r.y + r.h } },
-  ];
+  if (!r.vertices) return null;
   let best = null, bestDist = Infinity;
-  for (const c of candidates) {
-    const d = pointSegDist(p, c.a.x, c.a.y, c.b.x, c.b.y);
-    if (d < bestDist) { bestDist = d; best = c; }
+  for (let i = 0; i < r.vertices.length; i++) {
+    const a = r.vertices[i], b = r.vertices[(i + 1) % r.vertices.length];
+    const d = pointSegDist(p, a.x, a.y, b.x, b.y);
+    if (d < bestDist) { bestDist = d; best = { edgeIndex: i, a, b }; }
   }
   if (!best) return null;
-  // Compute fractional centre along the wall.
   const dx = best.b.x - best.a.x, dy = best.b.y - best.a.y;
   const lenSq = dx * dx + dy * dy;
   let t = ((p.x - best.a.x) * dx + (p.y - best.a.y) * dy) / lenSq;
   t = Math.max(0.05, Math.min(0.95, t));
-  return { side: best.side, center: t };
+  return { edgeIndex: best.edgeIndex, center: t };
+}
+
+// Lightweight in-progress polygon preview, drawn while the user places corners.
+function showPreviewPolygon(verts) {
+  const layer = document.querySelector('#canvas g[data-layer="preview"]');
+  if (!layer) return;
+  layer.innerHTML = '';
+  if (!verts || verts.length === 0) return;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const path = document.createElementNS(SVG_NS, 'polyline');
+  path.setAttribute('points', verts.map(v => `${v.x},${v.y}`).join(' '));
+  path.setAttribute('class', 'preview');
+  path.setAttribute('fill', 'none');
+  layer.appendChild(path);
+  for (const v of verts) {
+    const c = document.createElementNS(SVG_NS, 'circle');
+    c.setAttribute('cx', v.x); c.setAttribute('cy', v.y);
+    c.setAttribute('r', 60);
+    c.setAttribute('class', 'preview');
+    layer.appendChild(c);
+  }
 }

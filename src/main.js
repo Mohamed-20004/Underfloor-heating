@@ -3,7 +3,7 @@
 import { state, setMode, subscribe, emit, loadSample, clearAll, updateRoom,
   toggleWall, setLoops, clearLoops } from './state.js';
 import { initRenderer, render, fitToContent, applyView, setViewport } from './render.js';
-import { initEditor } from './editor.js';
+import { initEditor, resetCustomPolygon } from './editor.js';
 import { generateLoops } from './loops.js';
 import { summarise } from './calc.js';
 import { exportSVG, exportCSV, printDrawing } from './export.js';
@@ -54,6 +54,7 @@ function bindInput(sel, setter, isNumber = false) {
 $$('.tool').forEach(btn => {
   btn.addEventListener('click', () => {
     setMode(btn.dataset.mode);
+    if (btn.dataset.mode !== 'draw-custom') resetCustomPolygon();
     setStatus(toolHint(btn.dataset.mode));
     $('#tool-hint').textContent = toolHint(btn.dataset.mode);
   });
@@ -61,13 +62,14 @@ $$('.tool').forEach(btn => {
 
 function toolHint(mode) {
   switch (mode) {
-    case 'select': return 'Click a room to select it.';
-    case 'draw-room': return 'Click and drag to draw a room.';
-    case 'edit-walls': return 'Click any wall to toggle external/internal.';
+    case 'select': return 'Tap a room to select it. Vertex handles appear on the selected room.';
+    case 'draw-room': return 'Drag to draw a rectangular room.';
+    case 'draw-custom': return 'Tap each corner in turn (edges snap to horizontal/vertical). Tap near the first corner to close.';
+    case 'edit-walls': return 'Tap on (or near) a wall to toggle external/internal.';
     case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
-    case 'place-manifold': return 'Click anywhere to place the manifold.';
-    case 'draw-nogo': return 'Click and drag inside a room to add a no-go zone.';
-    case 'delete': return 'Click a room, door, or no-go zone to delete it.';
+    case 'place-manifold': return 'Tap anywhere to place the manifold.';
+    case 'draw-nogo': return 'Drag inside a room to add a no-go zone.';
+    case 'delete': return 'Tap a vertex to merge walls, or a room / door / no-go to delete.';
     default: return '';
   }
 }
@@ -140,6 +142,8 @@ const roomPatternEl = $('#room-pattern');
 const roomFinishEl = $('#room-finish');
 const roomZonesEl = $('#room-zones');
 const roomAreaEl = $('#room-area');
+// N/E/S/W checkboxes map to edge indices 0/1/2/3 on rectangular rooms.
+const SIDE_TO_EDGE = { n: 0, e: 1, s: 2, w: 3 };
 const wallChecks = {
   n: $('input[data-wall="n"]'),
   e: $('input[data-wall="e"]'),
@@ -168,7 +172,7 @@ roomZonesEl.addEventListener('input', () => {
 for (const side of ['n', 'e', 's', 'w']) {
   wallChecks[side].addEventListener('change', () => {
     const id = state.selection.id;
-    if (id) toggleWall(id, side);
+    if (id) toggleWall(id, SIDE_TO_EDGE[side]);
   });
 }
 
@@ -203,10 +207,36 @@ function syncRoomPanel() {
   roomPatternEl.value = room.pattern;
   roomFinishEl.value = room.finish || 'tile';
   if (document.activeElement !== roomZonesEl) roomZonesEl.value = room.zoneCount || 1;
-  roomAreaEl.textContent = ((room.w * room.h) / 1e6).toFixed(2);
-  for (const side of ['n', 'e', 's', 'w']) {
-    wallChecks[side].checked = room.walls[side] === 'external';
+  roomAreaEl.textContent = (polygonAreaForRoom(room) / 1e6).toFixed(2);
+  // Walls UI: only show N/E/S/W boxes for axis-aligned 4-vertex rooms. For
+  // custom polygons, prompt the user to use the Wall tool on individual edges.
+  const isRect = isAxisRect(room.vertices);
+  const wallsBox = $('.walls-fieldset');
+  if (wallsBox) wallsBox.hidden = !isRect;
+  if (isRect) {
+    for (const side of ['n', 'e', 's', 'w']) {
+      wallChecks[side].checked = room.edgeKinds[SIDE_TO_EDGE[side]] === 'external';
+    }
   }
+}
+
+function polygonAreaForRoom(room) {
+  const vs = room.vertices || [];
+  let s = 0;
+  for (let i = 0, n = vs.length; i < n; i++) {
+    const a = vs[i], b = vs[(i + 1) % n];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(s) / 2;
+}
+
+function isAxisRect(vertices) {
+  if (!vertices || vertices.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % 4];
+    if (Math.abs(a.x - b.x) > 1 && Math.abs(a.y - b.y) > 1) return false;
+  }
+  return true;
 }
 
 function syncSchedule() {

@@ -1,8 +1,10 @@
 // calc.js — derive headline figures from generated loops.
 
+import { polygonArea } from './geometry.js';
+
 export function summarise(state) {
   const { rooms, loops, config } = state;
-  const totalArea = rooms.reduce((acc, r) => acc + (r.w * r.h) / 1e6, 0); // m²
+  const totalArea = rooms.reduce((acc, r) => acc + polygonArea(r.vertices || []) / 1e6, 0); // m²
   const totalPipe = loops.reduce((acc, l) => acc + l.totalLength, 0) / 1000; // m
   const tails = loops.reduce((acc, l) => acc + l.tailLength, 0) / 1000;
   const wastage = totalPipe * (config.wastageFactor - 1);

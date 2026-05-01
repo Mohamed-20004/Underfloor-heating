@@ -50,15 +50,31 @@ export function clearSelection() {
   emit();
 }
 
+// Build a polygon room. `vertices` is a closed clockwise polygon (last point
+// not repeated). `edgeKinds` is an array of 'external' | 'internal' parallel
+// to vertices: edgeKinds[i] is the wall type of the edge from vertices[i] to
+// vertices[(i+1) % N].
 export function addRoom(rect) {
+  const vertices = [
+    { x: Math.round(rect.x), y: Math.round(rect.y) },
+    { x: Math.round(rect.x + rect.w), y: Math.round(rect.y) },
+    { x: Math.round(rect.x + rect.w), y: Math.round(rect.y + rect.h) },
+    { x: Math.round(rect.x), y: Math.round(rect.y + rect.h) },
+  ];
+  return addRoomFromVertices(vertices, ['external', 'internal', 'internal', 'external']);
+}
+
+export function addCustomRoom(vertices) {
+  if (!vertices || vertices.length < 3) return null;
+  return addRoomFromVertices(vertices, vertices.map(() => 'external'));
+}
+
+function addRoomFromVertices(vertices, edgeKinds) {
   const room = {
     id: newId('room'),
     name: `ROOM ${state.rooms.length + 1}`,
-    x: Math.round(rect.x),
-    y: Math.round(rect.y),
-    w: Math.round(rect.w),
-    h: Math.round(rect.h),
-    walls: { n: 'external', e: 'internal', s: 'internal', w: 'external' },
+    vertices: vertices.map(v => ({ x: Math.round(v.x), y: Math.round(v.y) })),
+    edgeKinds: edgeKinds.slice(),
     noGoZones: [],
     doors: [],
     pattern: 'serpentine',
@@ -85,10 +101,12 @@ export function deleteRoom(id) {
   emit();
 }
 
-export function toggleWall(roomId, side) {
+export function toggleWall(roomId, edgeIndex) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r) return;
-  r.walls[side] = r.walls[side] === 'external' ? 'internal' : 'external';
+  const i = Number(edgeIndex);
+  if (Number.isNaN(i) || i < 0 || i >= r.edgeKinds.length) return;
+  r.edgeKinds[i] = r.edgeKinds[i] === 'external' ? 'internal' : 'external';
   emit();
 }
 
@@ -112,17 +130,16 @@ export function deleteNoGo(roomId, nogoId) {
   emit();
 }
 
-// Doors live as openings on a specific wall side, parameterised by the
-// fractional centre position (0..1 along the wall) and a width in millimetres.
-// Walls render with a gap at each door, and pipe tails route through them.
-export function addDoor(roomId, side, center, width = 800) {
+// Doors live on a polygon edge identified by edgeIndex (0..vertices.length-1)
+// at fractional centre `center` (0..1) along the edge, with a width in mm.
+export function addDoor(roomId, edgeIndex, center, width = 800) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r) return;
   if (!r.doors) r.doors = [];
   const c = Math.max(0.05, Math.min(0.95, center));
   r.doors.push({
     id: newId('door'),
-    side,
+    edgeIndex: Number(edgeIndex),
     center: c,
     width,
   });
@@ -133,6 +150,31 @@ export function deleteDoor(roomId, doorId) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r || !r.doors) return;
   r.doors = r.doors.filter(d => d.id !== doorId);
+  emit();
+}
+
+// Remove a vertex from a polygon room. Adjacent edges merge; edge kinds are
+// preserved for the surviving edge by inheriting from the previous edge.
+// Refuses to drop below 3 vertices (a polygon cannot be smaller).
+export function deleteVertex(roomId, vertexIndex) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r || !r.vertices || r.vertices.length <= 3) return;
+  const i = Number(vertexIndex);
+  if (Number.isNaN(i) || i < 0 || i >= r.vertices.length) return;
+  const prevEdge = (i - 1 + r.edgeKinds.length) % r.edgeKinds.length;
+  r.vertices.splice(i, 1);
+  // Remove the outgoing edge of the deleted vertex; the incoming edge survives.
+  r.edgeKinds.splice(i, 1);
+  // Doors that lived on the removed edge are dropped; doors on later edges
+  // shift down by one index. Doors on the surviving (previous) edge are kept
+  // but their `center` is invalid because the edge length changed; re-clamp.
+  if (r.doors && r.doors.length > 0) {
+    r.doors = r.doors.flatMap(d => {
+      if (d.edgeIndex === i) return []; // door on removed edge
+      const newIdx = d.edgeIndex > i ? d.edgeIndex - 1 : d.edgeIndex;
+      return [{ ...d, edgeIndex: newIdx, center: Math.max(0.05, Math.min(0.95, d.center)) }];
+    });
+  }
   emit();
 }
 
@@ -162,64 +204,89 @@ export function clearAll() {
   emit();
 }
 
+// Edge indices for rectangle-shaped polygons (clockwise from top-left):
+// 0 = north (top), 1 = east (right), 2 = south (bottom), 3 = west (left).
+const SIDE = { n: 0, e: 1, s: 2, w: 3 };
+
+function rectRoom({ name, x, y, w, h, walls, doors = [], noGoZones = [], pattern = 'serpentine', finish = 'tile', zoneCount = 1 }) {
+  return {
+    id: newId('room'),
+    name,
+    vertices: [
+      { x, y },
+      { x: x + w, y },
+      { x: x + w, y: y + h },
+      { x, y: y + h },
+    ],
+    edgeKinds: [walls.n || 'internal', walls.e || 'internal', walls.s || 'internal', walls.w || 'internal'],
+    noGoZones,
+    doors: doors.map(d => ({
+      id: newId('door'),
+      edgeIndex: SIDE[d.side],
+      center: d.center,
+      width: d.width,
+    })),
+    pattern, finish, zoneCount,
+  };
+}
+
 export function loadSample() {
   state.rooms = [];
   state.loops = [];
   state.warnings = [];
   // A modest cottage-style ground floor: kitchen, dining, living, hall, WC.
   // Coordinates in millimetres.
-  state.rooms.push({
-    id: newId('room'), name: 'KITCHEN',
+  state.rooms.push(rectRoom({
+    name: 'KITCHEN',
     x: 0, y: 0, w: 4500, h: 3500,
     walls: { n: 'external', e: 'internal', s: 'internal', w: 'external' },
     noGoZones: [
       { id: newId('nogo'), x: 0, y: 0, w: 4500, h: 600 },           // run of units along north wall
       { id: newId('nogo'), x: 0, y: 600, w: 600, h: 1800 },          // tall units against west wall
     ],
-    doors: [{ id: newId('door'), side: 's', center: 0.85, width: 800 }],
-    pattern: 'serpentine', finish: 'tile', zoneCount: 1,
-  });
-  state.rooms.push({
-    id: newId('room'), name: 'DINING',
+    doors: [{ side: 's', center: 0.85, width: 800 }],
+    pattern: 'serpentine', finish: 'tile',
+  }));
+  state.rooms.push(rectRoom({
+    name: 'DINING',
     x: 4500, y: 0, w: 3500, h: 3500,
     walls: { n: 'external', e: 'external', s: 'internal', w: 'internal' },
-    noGoZones: [],
-    doors: [{ id: newId('door'), side: 's', center: 0.2, width: 900 }],
-    pattern: 'serpentine', finish: 'engineered', zoneCount: 1,
-  });
-  state.rooms.push({
-    id: newId('room'), name: 'LIVING',
+    doors: [{ side: 's', center: 0.2, width: 900 }],
+    pattern: 'serpentine', finish: 'engineered',
+  }));
+  state.rooms.push(rectRoom({
+    name: 'LIVING',
     x: 0, y: 3500, w: 5500, h: 4500,
     walls: { s: 'external', w: 'external', n: 'internal', e: 'internal' },
     noGoZones: [
       { id: newId('nogo'), x: 1800, y: 3500, w: 1400, h: 400 },       // fireplace hearth
     ],
-    doors: [{ id: newId('door'), side: 'e', center: 0.05, width: 900 }],
+    doors: [{ side: 'e', center: 0.05, width: 900 }],
     pattern: 'bifilar', finish: 'carpet', zoneCount: 2,
-  });
-  state.rooms.push({
-    id: newId('room'), name: 'HALL',
+  }));
+  state.rooms.push(rectRoom({
+    name: 'HALL',
     x: 5500, y: 3500, w: 1800, h: 4500,
     walls: { s: 'external', n: 'internal', e: 'internal', w: 'internal' },
     noGoZones: [
       { id: newId('nogo'), x: 5500, y: 5800, w: 1800, h: 1500 },     // stairs
     ],
     doors: [
-      { id: newId('door'), side: 'n', center: 0.5, width: 900 },
-      { id: newId('door'), side: 'w', center: 0.05, width: 900 },
+      { side: 'n', center: 0.5, width: 900 },
+      { side: 'w', center: 0.05, width: 900 },
     ],
-    pattern: 'hybrid', finish: 'tile', zoneCount: 1,
-  });
-  state.rooms.push({
-    id: newId('room'), name: 'WC',
+    pattern: 'hybrid', finish: 'tile',
+  }));
+  state.rooms.push(rectRoom({
+    name: 'WC',
     x: 7300, y: 3500, w: 700, h: 1800,
     walls: { e: 'external', n: 'internal', s: 'internal', w: 'internal' },
     noGoZones: [
       { id: newId('nogo'), x: 7400, y: 3550, w: 500, h: 700 },        // WC pan + cistern
     ],
-    doors: [{ id: newId('door'), side: 'w', center: 0.85, width: 700 }],
-    pattern: 'serpentine', finish: 'tile', zoneCount: 1,
-  });
+    doors: [{ side: 'w', center: 0.85, width: 700 }],
+    pattern: 'serpentine', finish: 'tile',
+  }));
   state.manifold = { x: 5500, y: 3450 };
   state.selection = { type: null, id: null };
   emit();

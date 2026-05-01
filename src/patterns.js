@@ -1,21 +1,19 @@
-// patterns.js — pipe-path generators for the three supported layouts.
-// Each generator returns an array of {x, y} points in millimetres. The
-// returned polyline is later smoothed at corners for rendering and length.
+// patterns.js — pipe-path generators for serpentine, bifilar, and hybrid layouts.
+// Rooms are axis-aligned polygons (vertices + per-edge kinds). Each generator
+// returns a polyline as an array of {x, y} points in millimetres. The renderer
+// later smooths corners into circular arcs.
 
-import { insetRect, insetRectPerSide, longestExternalWall, segmentHitsNoGo } from './geometry.js';
+import {
+  longestExternalWall,
+  bbox,
+  clipHorizontalLine,
+  clipVerticalLine,
+  segmentHitsNoGo,
+  edgeLength,
+  pointInPolygon,
+  eps,
+} from './geometry.js';
 
-// Per-side inset for a room: zero for sub-zone partitions (so pipes from
-// adjacent zones meet at the boundary), full setback otherwise.
-function setbackInsets(room, setback) {
-  const sides = ['n', 'e', 's', 'w'];
-  const out = {};
-  for (const k of sides) {
-    out[k] = room.walls[k] === 'partition' ? 0 : setback;
-  }
-  return out;
-}
-
-// Public entry point. Picks the generator based on room.pattern.
 export function generateRoomPath(room, config) {
   const pattern = room.pattern || 'serpentine';
   if (pattern === 'bifilar') return generateBifilar(room, config);
@@ -23,101 +21,120 @@ export function generateRoomPath(room, config) {
   return generateSerpentine(room, config);
 }
 
+// True if the polygon is an axis-aligned 4-vertex rectangle. Used to opt the
+// bifilar pattern (concentric spirals) in to its fast path and to apply
+// per-side wall setbacks for sub-zone partitions.
+function isAxisAlignedRect(vertices) {
+  if (!vertices || vertices.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % 4];
+    const isVertical = Math.abs(a.x - b.x) < eps;
+    const isHorizontal = Math.abs(a.y - b.y) < eps;
+    if (!isVertical && !isHorizontal) return false;
+  }
+  return true;
+}
+
+// Per-side setbacks (N/E/S/W) for a rectangular room. Partition edges (used
+// at sub-zone boundaries) get zero setback so adjacent zones meet flush.
+// Non-rectangular polygons get a uniform setback on every side.
+function setbacksForRoom(room, wallSetback) {
+  const def = { n: wallSetback, e: wallSetback, s: wallSetback, w: wallSetback };
+  if (!isAxisAlignedRect(room.vertices)) return def;
+  const ek = room.edgeKinds || [];
+  return {
+    n: ek[0] === 'partition' ? 0 : wallSetback,
+    e: ek[1] === 'partition' ? 0 : wallSetback,
+    s: ek[2] === 'partition' ? 0 : wallSetback,
+    w: ek[3] === 'partition' ? 0 : wallSetback,
+  };
+}
+
 // -----------------------------------------------------------------------------
-// Serpentine (meander)
+// Serpentine (meander) — works on any axis-aligned polygon.
 // -----------------------------------------------------------------------------
 
 function generateSerpentine(room, config) {
   const { wallSetback, edgeSpacing, pipeSpacing, edgeZoneWidth } = config;
   const ext = longestExternalWall(room);
   if (!ext) return [];
+  const b = bbox(room.vertices);
+  const sb = setbacksForRoom(room, wallSetback);
+  if (b.w <= sb.w + sb.e || b.h <= sb.n + sb.s) return [];
 
-  const inner = insetRectPerSide({ x: room.x, y: room.y, w: room.w, h: room.h }, setbackInsets(room, wallSetback));
-  if (inner.w <= 0 || inner.h <= 0) return [];
+  // Determine row direction from the spine edge's axis.
+  const horizontalSpine = ext.axis === 'h';
+  // Stack range (perpendicular to rows) uses N/S setbacks for horizontal spine,
+  // W/E setbacks for vertical spine.
+  const stackMin = horizontalSpine ? b.y + sb.n : b.x + sb.w;
+  const stackMax = horizontalSpine ? b.y + b.h - sb.s : b.x + b.w - sb.e;
+  if (stackMax <= stackMin) return [];
 
-  const horizontalSpine = ext.side === 'n' || ext.side === 's';
-  const opposite = ext.side === 'n' ? 's' : ext.side === 's' ? 'n' : ext.side === 'e' ? 'w' : 'e';
-  const oppExternal = room.walls[opposite] === 'external';
+  // Lateral inset (along the row direction): how much each row is shortened
+  // at its start/end. For horizontal spine: W inset at start, E inset at end.
+  const lateralStartInset = horizontalSpine ? sb.w : sb.n;
+  const lateralEndInset = horizontalSpine ? sb.e : sb.s;
 
-  // Lateral bounds (where each row starts and ends).
-  const rowStart = horizontalSpine ? inner.x : inner.y;
-  const rowEnd = horizontalSpine ? inner.x + inner.w : inner.y + inner.h;
+  // Decide whether to start from the spine side. The first row hugs the spine.
+  const spineMidPos = horizontalSpine
+    ? (ext.wall.a.y + ext.wall.b.y) / 2
+    : (ext.wall.a.x + ext.wall.b.x) / 2;
+  const spineAtMin = Math.abs(spineMidPos - (horizontalSpine ? b.y : b.x)) < Math.abs(spineMidPos - (horizontalSpine ? b.y + b.h : b.x + b.w));
 
-  // Stacking bounds (perpendicular to row direction).
-  const stackMin = horizontalSpine ? inner.y : inner.x;
-  const stackMax = horizontalSpine ? inner.y + inner.h : inner.x + inner.w;
+  // Build the list of row stack positions, tightening spacing in the edge zone.
+  const positions = [];
+  let off = edgeSpacing / 2;
   const stackLen = stackMax - stackMin;
-  if (stackLen <= 0) return [];
-
-  // Distance offsets (from spine wall) at which to place each row.
-  const offsets = [];
-  let off = edgeSpacing / 2; // first row sits half edge-spacing from the inner boundary
   while (off < stackLen) {
-    offsets.push(off);
-    const distToSpine = off;
-    const distToOpposite = stackLen - off;
-    const distToNearestExt = Math.min(
-      distToSpine,
-      oppExternal ? distToOpposite : Infinity
-    );
-    const inEdgeZone = distToNearestExt < edgeZoneWidth;
-    const step = inEdgeZone ? edgeSpacing : pipeSpacing;
-    off += step;
+    const pos = spineAtMin ? stackMin + off : stackMax - off;
+    positions.push(pos);
+    const inEdgeZone = Math.min(off, stackLen - off) < edgeZoneWidth;
+    off += inEdgeZone ? edgeSpacing : pipeSpacing;
   }
-  if (offsets.length === 0) return [];
+  if (positions.length === 0) return [];
 
-  // Determine the geometric position of each row in absolute coordinates.
-  const spineAtMin = ext.side === 'n' || ext.side === 'w';
-  const positions = offsets.map(o => spineAtMin ? stackMin + o : stackMax - o);
-
-  // Build the polyline: rows alternate direction; each row segment may be
-  // truncated or skipped to avoid no-go zones.
+  let direction = 1;
   const points = [];
-  let direction = 1; // 1 = forward, -1 = reverse
-  for (let i = 0; i < positions.length; i++) {
-    const pos = positions[i];
-    const row = buildRow(room, horizontalSpine, pos, rowStart, rowEnd, direction);
-    if (!row) continue;
+  for (let r = 0; r < positions.length; r++) {
+    const pos = positions[r];
+    const intervals = horizontalSpine
+      ? clipHorizontalLine(pos, room.vertices)
+      : clipVerticalLine(pos, room.vertices);
+    if (!intervals.length) continue;
+
+    // Inset each interval by per-side setbacks at the row endpoints.
+    const inset = intervals
+      .map(([lo, hi]) => [lo + lateralStartInset, hi - lateralEndInset])
+      .filter(([lo, hi]) => hi - lo > 1);
+    if (!inset.length) continue;
+
+    // Subtract no-go zones from every candidate sub-segment, then choose the
+    // longest available segment.
+    const candidates = [];
+    for (const [lo, hi] of inset) {
+      const a = horizontalSpine ? { x: lo, y: pos } : { x: pos, y: lo };
+      const c = horizontalSpine ? { x: hi, y: pos } : { x: pos, y: hi };
+      const subs = subtractNoGo(a, c, horizontalSpine, room.noGoZones || []);
+      candidates.push(...subs);
+    }
+    if (!candidates.length) continue;
+    let best = candidates[0], bestLen = segLen(best);
+    for (const s of candidates) {
+      const l = segLen(s);
+      if (l > bestLen) { best = s; bestLen = l; }
+    }
+
+    const [start, end] = direction > 0 ? [best.a, best.b] : [best.b, best.a];
     if (points.length === 0) {
-      points.push(row.start, row.end);
+      points.push(start, end);
     } else {
-      // Add the connecting point (jog to new row at the same x/y as previous end)
-      // and then the new row's two endpoints. Smoothing creates the U-bend.
       const prev = points[points.length - 1];
-      const jog = horizontalSpine
-        ? { x: prev.x, y: pos }
-        : { x: pos, y: prev.y };
-      points.push(jog, row.end);
+      const jog = horizontalSpine ? { x: prev.x, y: pos } : { x: pos, y: prev.y };
+      points.push(jog, end);
     }
     direction *= -1;
   }
   return points;
-}
-
-// Build a single row at the given perpendicular position, truncated to avoid
-// no-go zones. Returns { start, end } in absolute coords, or null if no
-// usable segment remains.
-function buildRow(room, horizontalSpine, pos, lateralStart, lateralEnd, direction) {
-  const noGo = room.noGoZones || [];
-  const a = horizontalSpine ? { x: lateralStart, y: pos } : { x: pos, y: lateralStart };
-  const b = horizontalSpine ? { x: lateralEnd, y: pos } : { x: pos, y: lateralEnd };
-
-  // Find sub-segments of [a,b] that avoid no-go zones. We sample at fine
-  // granularity since rooms are not large and no-go rectangles are axis-aligned.
-  const segments = subtractNoGo(a, b, horizontalSpine, noGo);
-  if (segments.length === 0) return null;
-
-  // Use the longest available sub-segment — this approximates the spec rule
-  // that we keep the row as long as possible while avoiding obstructions.
-  let best = segments[0], bestLen = segLen(best);
-  for (const s of segments) {
-    const l = segLen(s);
-    if (l > bestLen) { best = s; bestLen = l; }
-  }
-  if (direction < 0) {
-    return { start: best.b, end: best.a };
-  }
-  return { start: best.a, end: best.b };
 }
 
 function segLen(s) {
@@ -126,10 +143,9 @@ function segLen(s) {
 }
 
 // Subtract no-go rectangles from a single axis-aligned segment, returning a
-// list of remaining sub-segments.
+// list of remaining sub-segments {a, b}.
 function subtractNoGo(a, b, horizontal, noGo) {
   if (!noGo || noGo.length === 0) return [{ a, b }];
-  // Project onto the parametric axis: t = 0 at a, t = 1 at b.
   const intervals = [{ t0: 0, t1: 1 }];
   const start = horizontal ? a.x : a.y;
   const end = horizontal ? b.x : b.y;
@@ -149,7 +165,6 @@ function subtractNoGo(a, b, horizontal, noGo) {
     if (t1 < 0 || t0 > 1) continue;
     t0 = Math.max(0, t0);
     t1 = Math.min(1, t1);
-    // Subtract [t0, t1] from each interval.
     const next = [];
     for (const iv of intervals) {
       if (t1 <= iv.t0 || t0 >= iv.t1) { next.push(iv); continue; }
@@ -161,7 +176,7 @@ function subtractNoGo(a, b, horizontal, noGo) {
   }
 
   return intervals
-    .filter(iv => iv.t1 - iv.t0 > 0.01) // discard slivers
+    .filter(iv => iv.t1 - iv.t0 > 0.01)
     .map(iv => ({
       a: { x: a.x + (b.x - a.x) * iv.t0, y: a.y + (b.y - a.y) * iv.t0 },
       b: { x: a.x + (b.x - a.x) * iv.t1, y: a.y + (b.y - a.y) * iv.t1 },
@@ -169,63 +184,59 @@ function subtractNoGo(a, b, horizontal, noGo) {
 }
 
 // -----------------------------------------------------------------------------
-// Bifilar (counterflow spiral)
+// Bifilar (counterflow spiral) — fast path for axis-aligned rectangles only.
+// Non-rectangular polygons fall back to serpentine.
 // -----------------------------------------------------------------------------
 
 function generateBifilar(room, config) {
+  if (!isAxisAlignedRect(room.vertices)) return generateSerpentine(room, config);
   const { wallSetback, edgeSpacing, pipeSpacing } = config;
-  const inner = insetRectPerSide({ x: room.x, y: room.y, w: room.w, h: room.h }, setbackInsets(room, wallSetback));
+  const b = bbox(room.vertices);
+  const sb = setbacksForRoom(room, wallSetback);
+  const inner = {
+    x: b.x + sb.w,
+    y: b.y + sb.n,
+    w: b.w - sb.w - sb.e,
+    h: b.h - sb.n - sb.s,
+  };
   if (inner.w <= 4 * pipeSpacing || inner.h <= 4 * pipeSpacing) {
-    // Room is too tight for a meaningful bifilar — fall back to serpentine.
     return generateSerpentine(room, config);
   }
-  // Pair-spacing: inward and outward runs are interleaved at `pipeSpacing`,
-  // so each spiral turn steps inward by 2 * pipeSpacing.
   const startOffset = edgeSpacing / 2;
   const inward = rectSpiral(inner, startOffset, 2 * pipeSpacing);
   const outward = rectSpiral(inner, startOffset + pipeSpacing, 2 * pipeSpacing).reverse();
-  // Connect at the centre with a short jog; the smoother turns it into a tight U-bend.
   return [...inward, ...outward];
 }
 
-// Generate a clockwise rectangular spiral inward from the boundary defined by
-// `startOffset` inside `rect`, stepping inward by `step` per turn. Returns a
-// polyline that ends near the centre.
 function rectSpiral(rect, startOffset, step) {
   const pts = [];
   let left = rect.x + startOffset;
   let right = rect.x + rect.w - startOffset;
   let top = rect.y + startOffset;
   let bottom = rect.y + rect.h - startOffset;
-
   if (right - left <= 0 || bottom - top <= 0) return pts;
 
   pts.push({ x: left, y: top });
   let safety = 0;
   while (right - left > step && bottom - top > step && safety++ < 200) {
-    pts.push({ x: right, y: top });          // top edge, left → right
-    pts.push({ x: right, y: bottom });       // right edge, top → bottom
-    pts.push({ x: left, y: bottom });        // bottom edge, right → left
+    pts.push({ x: right, y: top });
+    pts.push({ x: right, y: bottom });
+    pts.push({ x: left, y: bottom });
     top += step;
-    pts.push({ x: left, y: top });           // partial left edge, stops one step short
+    pts.push({ x: left, y: top });
     left += step;
-    pts.push({ x: left, y: top });           // step inward along the top
+    pts.push({ x: left, y: top });
     right -= step;
     bottom -= step;
   }
-  // Close to the centre with a short final stroke.
   if (right - left > 1) pts.push({ x: right, y: top });
   if (bottom - top > 1) pts.push({ x: right, y: bottom });
   return pts;
 }
 
 // -----------------------------------------------------------------------------
-// Hybrid (routed)
+// Hybrid (routed) — serpentine with no-go avoidance (already built in).
 // -----------------------------------------------------------------------------
-// For the MVP the hybrid pattern is a serpentine that skips obstructed rows
-// and tolerates skipped coverage. Real production code would do skeleton-based
-// pathfinding around obstacles; the spec explicitly notes hybrid layouts may be
-// less geometrically regular.
 
 function generateHybrid(room, config) {
   return generateSerpentine(room, config);

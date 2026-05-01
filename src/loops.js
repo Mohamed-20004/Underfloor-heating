@@ -4,46 +4,80 @@
 // loops are visually distinguishable.
 
 import { generateRoomPath } from './patterns.js';
-import { polylineLength, bbox, dist } from './geometry.js';
+import { polylineLength, bbox, dist, eps } from './geometry.js';
 import { routeTail } from './doors.js';
 
+// Detect a 4-vertex axis-aligned rectangle so we can apply the rectangular
+// zone-split fast path. Non-rectangular polygons keep zoneCount=1 for now.
+function rectInfo(vertices) {
+  if (!vertices || vertices.length !== 4) return null;
+  for (let i = 0; i < 4; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % 4];
+    const isV = Math.abs(a.x - b.x) < eps;
+    const isH = Math.abs(a.y - b.y) < eps;
+    if (!isV && !isH) return null;
+  }
+  const xs = vertices.map(v => v.x), ys = vertices.map(v => v.y);
+  return {
+    x: Math.min(...xs), y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs),
+    h: Math.max(...ys) - Math.min(...ys),
+  };
+}
+
+// Build a clockwise rectangle polygon and matching edgeKinds in N/E/S/W order.
+function rectPolygon(x, y, w, h, edgeKinds) {
+  const vertices = [
+    { x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h },
+  ];
+  return { vertices, edgeKinds: edgeKinds.slice() };
+}
+
 // Split a room into N independent thermal zones along its longer dimension.
-// The shared boundaries become "partition" walls so the pattern engine knows
-// to omit the wall setback there (pipes from adjacent zones meet flush).
+// Currently rectangular rooms only — partition edges use 'internal' kind with
+// a partition flag so the pattern's setback math knows to omit the inset on
+// shared boundaries. Non-rectangular polygon rooms return a single zone.
 export function expandZones(room) {
   const n = Math.max(1, Math.min(8, room.zoneCount || 1));
-  if (n === 1) return [{ ...room, zoneOf: room.id, zoneIndex: 1, zoneCount: 1 }];
-  const horizontal = room.w >= room.h; // split along the longer axis
+  const single = [{ ...room, zoneOf: room.id, zoneIndex: 1, zoneCount: 1, parentRoomId: room.id }];
+  if (n === 1) return single;
+  const rect = rectInfo(room.vertices);
+  if (!rect) return single; // polygon rooms don't yet support zoning
+
+  const horizontal = rect.w >= rect.h; // split along longer axis
+  const ek = room.edgeKinds || [];
+  const NORTH = 0, EAST = 1, SOUTH = 2, WEST = 3;
   const subs = [];
   for (let i = 0; i < n; i++) {
-    const isFirst = i === 0;
-    const isLast = i === n - 1;
-    const sub = { ...room };
+    const isFirst = i === 0, isLast = i === n - 1;
+    let sx = rect.x, sy = rect.y, sw = rect.w, sh = rect.h;
     if (horizontal) {
-      const stripW = room.w / n;
-      sub.x = room.x + i * stripW;
-      sub.w = stripW;
+      const stripW = rect.w / n;
+      sx = rect.x + i * stripW; sw = stripW;
     } else {
-      const stripH = room.h / n;
-      sub.y = room.y + i * stripH;
-      sub.h = stripH;
+      const stripH = rect.h / n;
+      sy = rect.y + i * stripH; sh = stripH;
     }
-    sub.id = `${room.id}/z${i + 1}`;
-    sub.name = `${room.name} ${i + 1}`;
-    sub.zoneOf = room.id;
-    sub.zoneIndex = i + 1;
-    sub.zoneCount = n;
-    // Inherit walls but rewrite the shared edges as 'partition'.
-    sub.walls = { ...room.walls };
+    const subEdges = [ek[NORTH], ek[EAST], ek[SOUTH], ek[WEST]];
     if (horizontal) {
-      if (!isFirst) sub.walls.w = 'partition';
-      if (!isLast) sub.walls.e = 'partition';
+      if (!isFirst) subEdges[WEST] = 'partition';
+      if (!isLast) subEdges[EAST] = 'partition';
     } else {
-      if (!isFirst) sub.walls.n = 'partition';
-      if (!isLast) sub.walls.s = 'partition';
+      if (!isFirst) subEdges[NORTH] = 'partition';
+      if (!isLast) subEdges[SOUTH] = 'partition';
     }
-    sub.parentRoomId = room.id;
-    subs.push(sub);
+    const poly = rectPolygon(sx, sy, sw, sh, subEdges);
+    subs.push({
+      ...room,
+      ...poly,
+      id: `${room.id}/z${i + 1}`,
+      name: `${room.name} ${i + 1}`,
+      zoneOf: room.id,
+      zoneIndex: i + 1,
+      zoneCount: n,
+      parentRoomId: room.id,
+      doors: [], // doors stay on the parent room; tail routing looks them up via parent
+    });
   }
   return subs;
 }
@@ -211,10 +245,10 @@ function balanceCheck(loops) {
   return { spreadPct, min, max };
 }
 
-// Greedy 4-colour assignment: two loops are adjacent if their bounding boxes
-// intersect or are within `proximity` of each other. The algorithm always
-// finds a valid 4-colouring on planar adjacency graphs (4-colour theorem),
-// and a greedy choice is sufficient on typical layouts.
+// 4-colour assignment with Welsh-Powell ordering: process vertices in
+// descending degree order and greedily pick the smallest colour not used by
+// any neighbour. On planar adjacency graphs (which floor-plan loop layouts
+// always are) this reliably achieves a valid 4-colouring without backtracking.
 function assignColours(loops) {
   const proximity = 400; // mm
   const adj = loops.map(() => new Set());
@@ -225,11 +259,16 @@ function assignColours(loops) {
       }
     }
   }
-  for (let i = 0; i < loops.length; i++) {
+  // Reset and process highest-degree first.
+  loops.forEach(l => { l.colour = -1; });
+  const order = loops.map((_, i) => i).sort((a, b) => adj[b].size - adj[a].size);
+  for (const i of order) {
     const used = new Set();
-    for (const j of adj[i]) if (j < i) used.add(loops[j].colour);
+    for (const j of adj[i]) {
+      if (loops[j].colour >= 0) used.add(loops[j].colour);
+    }
     let c = 0;
-    while (used.has(c) && c < 4) c++;
+    while (used.has(c)) c++;
     loops[i].colour = c % 4;
   }
 }

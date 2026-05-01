@@ -2,7 +2,7 @@
 // The SVG uses a viewBox in millimetres so vector exports are correctly scaled.
 
 import { state } from './state.js';
-import { pointsToSmoothPath, bbox } from './geometry.js';
+import { pointsToSmoothPath, bbox, polygonArea, edgeLength, edgeOutwardNormal } from './geometry.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -120,59 +120,96 @@ function drawRooms() {
   clear(layers.rooms);
   for (const room of state.rooms) {
     const isSelected = state.selection.id === room.id;
-    svg('rect', {
-      x: room.x, y: room.y, width: room.w, height: room.h,
+    const points = (room.vertices || []).map(v => `${v.x},${v.y}`).join(' ');
+    svg('polygon', {
+      points,
       class: 'room-rect' + (isSelected ? ' selected' : ''),
       'data-room-id': room.id,
     }, layers.rooms);
-    // Room label.
-    const labelSize = Math.min(room.w, room.h) * 0.10;
+    // Room label centred on bounding-box midpoint (good enough for axis-
+    // aligned polygons; for highly concave rooms, label may sit outside).
+    const b = bbox(room.vertices || []);
+    const labelSize = Math.min(b.w, b.h) * 0.10;
     const fontSize = Math.max(120, Math.min(260, labelSize));
     svg('text', {
-      x: room.x + room.w / 2,
-      y: room.y + room.h / 2 - fontSize * 0.1,
+      x: b.cx, y: b.cy - fontSize * 0.1,
       class: 'room-label',
       'font-size': fontSize,
     }, layers.rooms).textContent = room.name;
     const areaSize = fontSize * 0.55;
     svg('text', {
-      x: room.x + room.w / 2,
-      y: room.y + room.h / 2 + areaSize * 1.4,
+      x: b.cx, y: b.cy + areaSize * 1.4,
       class: 'room-area',
       'font-size': areaSize,
-    }, layers.rooms).textContent = `${((room.w * room.h) / 1e6).toFixed(1)} m²`;
+    }, layers.rooms).textContent = `${(polygonArea(room.vertices || []) / 1e6).toFixed(1)} m²`;
   }
 }
 
 function drawWalls() {
   clear(layers.walls);
   for (const room of state.rooms) {
-    const x1 = room.x, y1 = room.y, x2 = room.x + room.w, y2 = room.y + room.h;
-    const segs = {
-      n: { a: { x: x1, y: y1 }, b: { x: x2, y: y1 }, axis: 'h', length: room.w },
-      e: { a: { x: x2, y: y1 }, b: { x: x2, y: y2 }, axis: 'v', length: room.h },
-      s: { a: { x: x1, y: y2 }, b: { x: x2, y: y2 }, axis: 'h', length: room.w },
-      w: { a: { x: x1, y: y1 }, b: { x: x1, y: y2 }, axis: 'v', length: room.h },
-    };
-    for (const side of ['n', 'e', 's', 'w']) {
-      const cls = room.walls[side] === 'external' ? 'wall external' : 'wall internal';
-      const seg = segs[side];
-      const doors = (room.doors || []).filter(d => d.side === side);
+    const vs = room.vertices || [];
+    const kinds = room.edgeKinds || [];
+    for (let i = 0; i < vs.length; i++) {
+      const a = vs[i], b = vs[(i + 1) % vs.length];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      const seg = { a, b, length: len };
+      const cls = wallClass(kinds[i]);
+      const doors = (room.doors || []).filter(d => d.edgeIndex === i);
       const subSegs = breakWallByDoors(seg, doors);
       for (const sub of subSegs) {
         svg('line', {
           x1: sub.a.x, y1: sub.a.y, x2: sub.b.x, y2: sub.b.y,
           class: cls,
           'data-room-id': room.id,
-          'data-wall-side': side,
+          'data-edge-index': i,
         }, layers.walls);
       }
+      // Length label, offset outward from the wall midpoint.
+      drawWallLengthLabel(room, vs, i, len);
     }
-    // Door swing arcs and click targets.
-    for (const d of room.doors || []) {
-      drawDoor(room, d);
+    // Doors and vertex handles.
+    for (const d of room.doors || []) drawDoor(room, d);
+    if (state.selection.id === room.id) {
+      for (let v = 0; v < vs.length; v++) drawVertexHandle(room, v, vs[v]);
     }
   }
+}
+
+function wallClass(kind) {
+  if (kind === 'external') return 'wall external';
+  if (kind === 'partition') return 'wall partition';
+  return 'wall internal';
+}
+
+function drawWallLengthLabel(room, vs, edgeIndex, len) {
+  if (len < 600) return; // skip tiny edges
+  const a = vs[edgeIndex], b = vs[(edgeIndex + 1) % vs.length];
+  const midx = (a.x + b.x) / 2, midy = (a.y + b.y) / 2;
+  const out = edgeOutwardNormal(vs, edgeIndex);
+  const offset = 220; // mm
+  const lx = midx + out.x * offset;
+  const ly = midy + out.y * offset;
+  const fontSize = 95;
+  // For vertical walls, rotate the label 90° so it reads along the wall.
+  const isVertical = Math.abs(a.x - b.x) < 1;
+  const rotation = isVertical ? `rotate(-90 ${lx} ${ly})` : '';
+  svg('text', {
+    x: lx, y: ly + fontSize * 0.35,
+    class: 'wall-length',
+    'font-size': fontSize,
+    'text-anchor': 'middle',
+    transform: rotation,
+  }, layers.walls).textContent = `${(len / 1000).toFixed(2)} m`;
+}
+
+function drawVertexHandle(room, index, v) {
+  svg('circle', {
+    cx: v.x, cy: v.y, r: 80,
+    class: 'vertex-handle',
+    'data-room-id': room.id,
+    'data-vertex-id': index,
+  }, layers.walls);
 }
 
 // Split a wall segment around door openings, returning an array of sub-segments
@@ -207,67 +244,40 @@ function breakWallByDoors(seg, doors) {
 }
 
 function drawDoor(room, d) {
-  // Compute the two door posts and the swing arc target.
-  const w = d.width;
-  let post1, post2, swingTarget, openInDir;
-  switch (d.side) {
-    case 'n': {
-      const cx = room.x + d.center * room.w;
-      post1 = { x: cx - w / 2, y: room.y };
-      post2 = { x: cx + w / 2, y: room.y };
-      swingTarget = { x: cx - w / 2, y: room.y + w }; // hinged at right post, swings into room
-      openInDir = { x: -1, y: 1 };
-      break;
-    }
-    case 's': {
-      const cx = room.x + d.center * room.w;
-      post1 = { x: cx - w / 2, y: room.y + room.h };
-      post2 = { x: cx + w / 2, y: room.y + room.h };
-      swingTarget = { x: cx - w / 2, y: room.y + room.h - w };
-      openInDir = { x: -1, y: -1 };
-      break;
-    }
-    case 'w': {
-      const cy = room.y + d.center * room.h;
-      post1 = { x: room.x, y: cy - w / 2 };
-      post2 = { x: room.x, y: cy + w / 2 };
-      swingTarget = { x: room.x + w, y: cy - w / 2 };
-      openInDir = { x: 1, y: -1 };
-      break;
-    }
-    case 'e':
-    default: {
-      const cy = room.y + d.center * room.h;
-      post1 = { x: room.x + room.w, y: cy - w / 2 };
-      post2 = { x: room.x + room.w, y: cy + w / 2 };
-      swingTarget = { x: room.x + room.w - w, y: cy - w / 2 };
-      openInDir = { x: -1, y: -1 };
-      break;
-    }
-  }
-  // Door leaf: line from post2 (hinge) to swingTarget.
+  const vs = room.vertices || [];
+  if (!vs.length) return;
+  const a = vs[d.edgeIndex];
+  const b = vs[(d.edgeIndex + 1) % vs.length];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len; // tangent
+  const out = edgeOutwardNormal(vs, d.edgeIndex);
+  // Inward normal (into the room) for the swing arc.
+  const ix = -out.x, iy = -out.y;
+  const cx = a.x + ux * len * d.center;
+  const cy = a.y + uy * len * d.center;
+  const w = d.width, half = w / 2;
+  const post1 = { x: cx - ux * half, y: cy - uy * half };
+  const post2 = { x: cx + ux * half, y: cy + uy * half };
+  // Hinge at post2; swing target sits a quarter-turn inward from post1.
+  const swingTarget = { x: post2.x + ix * w, y: post2.y + iy * w };
+  // Door leaf.
   svg('line', {
     x1: post2.x, y1: post2.y, x2: swingTarget.x, y2: swingTarget.y,
     class: 'door-leaf',
   }, layers.walls);
-  // Swing arc from post1 to swingTarget centred at post2.
+  // Swing arc from post1 (closed position) to swingTarget (90° open).
   svg('path', {
-    d: `M ${post1.x} ${post1.y} A ${w} ${w} 0 0 ${arcSweep(d.side)} ${swingTarget.x} ${swingTarget.y}`,
+    d: `M ${post1.x} ${post1.y} A ${w} ${w} 0 0 1 ${swingTarget.x} ${swingTarget.y}`,
     class: 'door-arc',
   }, layers.walls);
-  // Invisible thicker hit target so deletion / interaction is touch-friendly.
-  const cx = (post1.x + post2.x) / 2, cy = (post1.y + post2.y) / 2;
+  // Touch hit target.
   svg('rect', {
-    x: cx - w / 2, y: cy - w / 2, width: w, height: w,
+    x: cx - half, y: cy - half, width: w, height: w,
     fill: 'transparent', stroke: 'transparent',
     'data-room-id': room.id,
     'data-door-id': d.id,
   }, layers.walls);
-}
-
-function arcSweep(side) {
-  // SVG sweep flag chosen so the door arc curves inward into the room.
-  return (side === 'n' || side === 'e') ? 1 : 0;
 }
 
 function drawNoGo() {
