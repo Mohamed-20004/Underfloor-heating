@@ -2,7 +2,7 @@
 
 import { state, setMode, subscribe, emit, loadSample, clearAll, updateRoom,
   toggleWall, setLoops, clearLoops, setTracingImage, updateTracingImage,
-  removeTracingImage, undo, canUndo } from './state.js';
+  removeTracingImage, undo, redo, canUndo, canRedo, toggleFreeWallKind } from './state.js';
 import { initRenderer, render, fitToContent, applyView, setViewport } from './render.js';
 import { initEditor, resetCustomPolygon, resetFreeWall } from './editor.js';
 import { generateLoops } from './loops.js';
@@ -57,6 +57,11 @@ $$('.tool').forEach(btn => {
     setMode(btn.dataset.mode);
     if (btn.dataset.mode !== 'draw-custom') resetCustomPolygon();
     if (btn.dataset.mode !== 'add-wall') resetFreeWall();
+    if (btn.dataset.mode === 'add-image' && !state.tracingImage) {
+      // First Image tap also opens the picker so the user doesn't have to
+      // tap once on the toolbar then again on the canvas.
+      $('#trace-file').click();
+    }
     setStatus(toolHint(btn.dataset.mode));
     $('#tool-hint').textContent = toolHint(btn.dataset.mode);
   });
@@ -64,17 +69,16 @@ $$('.tool').forEach(btn => {
 
 function toolHint(mode) {
   switch (mode) {
-    case 'select': return 'Tap a room to select it. Vertex handles appear on the selected room.';
-    case 'draw-room': return 'Drag to draw a rectangular room.';
-    case 'draw-custom': return 'Tap each corner in turn (edges snap to horizontal/vertical). Tap near the first corner to close.';
-    case 'edit-walls': return 'Tap on (or near) a wall to toggle external/internal.';
-    case 'add-wall': return 'Tap once for the start, then again for the other end — the wall snaps to horizontal/vertical and confirms on the second tap.';
+    case 'select': return 'Tap a room, wall or door to select. Drag the selection to move it.';
+    case 'draw-custom': return 'Tap each corner in turn (edges snap horizontal/vertical). Tap near the first corner to close the room.';
+    case 'add-wall': return 'Tap once for the start of the wall, then again for the other end. Snaps to horizontal/vertical.';
     case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
-    case 'merge-walls': return 'Tap a vertex (white circle) to merge the two walls meeting there into one.';
     case 'place-manifold': return 'Tap anywhere to place the manifold.';
-    case 'draw-nogo': return 'Drag inside a room to add a no-go zone.';
-    case 'move-image': return 'Drag the tracing image to position it. Drag the small square at the bottom-right corner to resize.';
-    case 'delete': return 'Tap a vertex to merge walls; tap a wall, room, door, or no-go to delete it.';
+    case 'draw-nogo': return 'Drag inside a room to mark an area pipes should avoid.';
+    case 'add-image': return state.tracingImage
+      ? 'Drag the image to move; drag the bottom-right square to resize. Tap "Image" again or use the sidebar to replace.'
+      : 'Tap anywhere to choose a floor-plan image to draw over.';
+    case 'delete': return 'Tap a wall, door or room to delete it.';
     default: return '';
   }
 }
@@ -122,16 +126,24 @@ $('#trace-remove').addEventListener('click', () => {
 $('#btn-undo').addEventListener('click', () => {
   if (undo()) setStatus('Undone.');
 });
+$('#btn-redo').addEventListener('click', () => {
+  if (redo()) setStatus('Redone.');
+});
 
-// Cmd+Z (Mac, iPad keyboards) and Ctrl+Z (Windows) trigger undo.
+// Cmd+Z / Ctrl+Z = undo, Shift+Cmd+Z / Ctrl+Y = redo.
 window.addEventListener('keydown', e => {
-  const isUndo = (e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
-  if (!isUndo) return;
-  // Don't intercept undo while the user is typing in a text/number input.
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-  e.preventDefault();
-  if (undo()) setStatus('Undone.');
+  const z = e.key === 'z' || e.key === 'Z';
+  const y = e.key === 'y' || e.key === 'Y';
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && z && !e.shiftKey) {
+    e.preventDefault();
+    if (undo()) setStatus('Undone.');
+  } else if ((mod && z && e.shiftKey) || (mod && y)) {
+    e.preventDefault();
+    if (redo()) setStatus('Redone.');
+  }
 });
 
 $('#btn-sample').addEventListener('click', () => {
@@ -239,6 +251,7 @@ for (const side of ['n', 'e', 's', 'w']) {
 subscribe(() => {
   syncToolbarActive();
   syncRoomPanel();
+  syncWallPanel();
   syncTracingPanel();
   syncUndoButton();
   render();
@@ -249,8 +262,42 @@ subscribe(() => {
   syncCanvasCursor();
 });
 
+// Wall sidebar — shows when a free wall or a polygon edge is selected.
+const wallPanel = $('#wall-panel');
+const wallKindEl = $('#wall-kind');
+const wallLengthEl = $('#wall-length');
+wallKindEl.addEventListener('change', () => {
+  const sel = state.selection;
+  if (sel.type === 'free-wall') {
+    toggleFreeWallKind(sel.wallId); // toggles; the select already shows the new value via re-render
+  } else if (sel.type === 'wall' && sel.roomId !== undefined) {
+    toggleWall(sel.roomId, sel.edgeIndex);
+  }
+});
+function syncWallPanel() {
+  const sel = state.selection;
+  if (sel.type === 'free-wall') {
+    const w = (state.walls || []).find(x => x.id === sel.wallId);
+    if (!w) { wallPanel.hidden = true; return; }
+    wallPanel.hidden = false;
+    wallLengthEl.textContent = (Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) / 1000).toFixed(2);
+    wallKindEl.value = w.kind;
+  } else if (sel.type === 'wall') {
+    const r = state.rooms.find(x => x.id === sel.roomId);
+    if (!r) { wallPanel.hidden = true; return; }
+    wallPanel.hidden = false;
+    const a = r.vertices[sel.edgeIndex];
+    const b = r.vertices[(sel.edgeIndex + 1) % r.vertices.length];
+    wallLengthEl.textContent = (Math.hypot(b.x - a.x, b.y - a.y) / 1000).toFixed(2);
+    wallKindEl.value = r.edgeKinds[sel.edgeIndex];
+  } else {
+    wallPanel.hidden = true;
+  }
+}
+
 function syncUndoButton() {
   $('#btn-undo').disabled = !canUndo();
+  $('#btn-redo').disabled = !canRedo();
 }
 
 function syncTracingPanel() {

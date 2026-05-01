@@ -41,10 +41,12 @@ export const state = {
 let nextId = 1;
 export function newId(prefix) { return `${prefix}-${nextId++}`; }
 
-// Undo history. We snapshot only the data the user is editing — rooms,
-// manifold, tracing image — not derived state like loops or warnings.
+// Undo / Redo history. Two stacks: `past` (entries we can roll back to) and
+// `future` (entries we can roll forward to after an undo). Any new mutation
+// clears the future stack so the timeline branches forward.
 const HISTORY_LIMIT = 50;
-const history = [];
+const past = [];
+const future = [];
 
 function snapshot() {
   return {
@@ -55,30 +57,46 @@ function snapshot() {
   };
 }
 
-// Call this at the start of every mutating action (before the change). The
-// snapshot represents the state to roll back to when the user hits Undo.
-export function pushUndo() {
-  history.push(snapshot());
-  if (history.length > HISTORY_LIMIT) history.shift();
-}
-
-export function undo() {
-  if (history.length === 0) return false;
-  const last = history.pop();
-  state.rooms = last.rooms;
-  state.walls = last.walls || [];
-  state.manifold = last.manifold;
-  state.tracingImage = last.tracingImage;
+function applySnapshot(snap) {
+  state.rooms = snap.rooms;
+  state.walls = snap.walls || [];
+  state.manifold = snap.manifold;
+  state.tracingImage = snap.tracingImage;
   state.loops = [];
   state.warnings = [];
   state.selection = { type: null, id: null };
+}
+
+// Call this at the start of every mutating action (before the change).
+export function pushUndo() {
+  past.push(snapshot());
+  if (past.length > HISTORY_LIMIT) past.shift();
+  // A new mutation invalidates the redo stack.
+  future.length = 0;
+}
+
+export function undo() {
+  if (past.length === 0) return false;
+  future.push(snapshot());
+  if (future.length > HISTORY_LIMIT) future.shift();
+  applySnapshot(past.pop());
   emit();
   return true;
 }
 
-export function canUndo() { return history.length > 0; }
+export function redo() {
+  if (future.length === 0) return false;
+  past.push(snapshot());
+  if (past.length > HISTORY_LIMIT) past.shift();
+  applySnapshot(future.pop());
+  emit();
+  return true;
+}
 
-export function clearHistory() { history.length = 0; }
+export function canUndo() { return past.length > 0; }
+export function canRedo() { return future.length > 0; }
+
+export function clearHistory() { past.length = 0; future.length = 0; }
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export function emit() { for (const fn of listeners) fn(state); }
@@ -239,6 +257,48 @@ export function deleteVertex(roomId, vertexIndex) {
 export function setManifold(point) {
   pushUndo();
   state.manifold = { x: Math.round(point.x), y: Math.round(point.y) };
+  emit();
+}
+
+// Translate a room polygon (and its no-go zones) by (dx, dy). Used by the
+// Select-tool drag. We coalesce successive small translations into a single
+// undo entry: pushUndo only when more than 500 ms has passed since the last
+// translation call so a long drag is one undo, not hundreds.
+let lastRoomDragAt = 0;
+export function moveRoomBy(roomId, dx, dy) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  const now = Date.now();
+  if (now - lastRoomDragAt > 500) pushUndo();
+  lastRoomDragAt = now;
+  for (const v of r.vertices) { v.x += dx; v.y += dy; }
+  for (const z of r.noGoZones || []) { z.x += dx; z.y += dy; }
+  emit();
+}
+
+let lastFreeWallDragAt = 0;
+export function moveFreeWallBy(wallId, dx, dy) {
+  const w = (state.walls || []).find(w => w.id === wallId);
+  if (!w) return;
+  const now = Date.now();
+  if (now - lastFreeWallDragAt > 500) pushUndo();
+  lastFreeWallDragAt = now;
+  w.a.x += dx; w.a.y += dy;
+  w.b.x += dx; w.b.y += dy;
+  emit();
+}
+
+// Slide a door along its parent edge to the given fractional centre (0..1).
+let lastDoorDragAt = 0;
+export function setDoorCenter(roomId, doorId, center) {
+  const r = state.rooms.find(r => r.id === roomId);
+  if (!r) return;
+  const d = (r.doors || []).find(d => d.id === doorId);
+  if (!d) return;
+  const now = Date.now();
+  if (now - lastDoorDragAt > 500) pushUndo();
+  lastDoorDragAt = now;
+  d.center = Math.max(0.05, Math.min(0.95, center));
   emit();
 }
 

@@ -3,7 +3,8 @@
 
 import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
   addDoor, deleteDoor, addFreeWall, deleteFreeWall, selectRoom, clearSelection,
-  setManifold, toggleWall, emit, updateTracingImage } from './state.js';
+  setManifold, toggleWall, emit, updateTracingImage, moveRoomBy, moveFreeWallBy,
+  setDoorCenter } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -21,6 +22,9 @@ let wallStart = null;
 // down. Two pointers always take precedence over single-pointer tool actions.
 const pointers = new Map();
 let gestureStart = null;
+// Select-mode drag of a room / wall / door. `kind` is the entity type;
+// `last` is the previous pointer world position so we apply small deltas.
+let selectDrag = null;
 
 export function initEditor(canvasEl, opts = {}) {
   canvas = canvasEl;
@@ -86,6 +90,28 @@ function nearestFreeWall(p, tolerance) {
   return best;
 }
 
+// Return { roomId, doorId } if the pointer event hit a door's transparent
+// click target, else null.
+function doorAt(target) {
+  if (!target || !target.dataset) return null;
+  if (!target.dataset.doorId) return null;
+  return { roomId: target.dataset.roomId, doorId: target.dataset.doorId };
+}
+
+// Find the nearest polygon edge across all rooms within `tolerance` mm.
+function nearestRoomEdge(p, tolerance) {
+  let best = null, bestDist = tolerance;
+  for (const r of state.rooms) {
+    const vs = r.vertices || [];
+    for (let i = 0; i < vs.length; i++) {
+      const a = vs[i], b = vs[(i + 1) % vs.length];
+      const d = pointSegDist(p, a.x, a.y, b.x, b.y);
+      if (d < bestDist) { bestDist = d; best = { roomId: r.id, edgeIndex: i }; }
+    }
+  }
+  return best;
+}
+
 function snap(v, grid = 50) { return Math.round(v / grid) * grid; }
 
 function beginGesture() {
@@ -126,9 +152,13 @@ function onPointerDown(e) {
   const sp = { x: snap(wp.x), y: snap(wp.y) };
 
   switch (state.mode) {
-    case 'move-image': {
+    case 'add-image': {
+      // Tap anywhere to open the file picker if no image is loaded yet.
+      // Once an image is loaded, taps in this mode allow drag-to-position
+      // and the bottom-right corner handle resizes.
       if (!state.tracingImage) {
-        onStatus('Load an image first using "Choose image" in the left panel.');
+        const fileInput = document.getElementById('trace-file');
+        if (fileInput) fileInput.click();
         break;
       }
       const img = state.tracingImage;
@@ -275,9 +305,42 @@ function onPointerDown(e) {
     }
     case 'select':
     default: {
+      // Priority: door → free wall → room edge (polygon wall) → room area.
+      // Doors and walls are easier targets than the room area underneath them.
+      const door = doorAt(e.target);
+      if (door) {
+        state.selection = { type: 'door', roomId: door.roomId, doorId: door.doorId };
+        selectDrag = { kind: 'door', roomId: door.roomId, doorId: door.doorId, last: wp };
+        canvas.setPointerCapture(e.pointerId);
+        emit();
+        break;
+      }
+      const fw = nearestFreeWall(wp, 400);
+      if (fw) {
+        state.selection = { type: 'free-wall', wallId: fw.id };
+        selectDrag = { kind: 'free-wall', wallId: fw.id, last: wp };
+        canvas.setPointerCapture(e.pointerId);
+        emit();
+        break;
+      }
+      // Polygon edge near the click — selects an individual wall of a room
+      // so the user can flip its type via the sidebar.
+      const re = nearestRoomEdge(wp, 400);
+      if (re) {
+        state.selection = { type: 'wall', roomId: re.roomId, edgeIndex: re.edgeIndex };
+        selectDrag = null;
+        emit();
+        break;
+      }
       const room = roomAt(wp);
-      if (room) selectRoom(room.id);
-      else clearSelection();
+      if (room) {
+        selectRoom(room.id);
+        selectDrag = { kind: 'room', roomId: room.id, last: wp };
+        canvas.setPointerCapture(e.pointerId);
+        break;
+      }
+      clearSelection();
+      selectDrag = null;
       break;
     }
   }
@@ -325,6 +388,32 @@ function onPointerMove(e) {
     }
     return;
   }
+  if (selectDrag) {
+    const dx = wp.x - selectDrag.last.x;
+    const dy = wp.y - selectDrag.last.y;
+    selectDrag.last = wp;
+    if (selectDrag.kind === 'room') {
+      moveRoomBy(selectDrag.roomId, dx, dy);
+    } else if (selectDrag.kind === 'free-wall') {
+      moveFreeWallBy(selectDrag.wallId, dx, dy);
+    } else if (selectDrag.kind === 'door') {
+      // Project the cursor onto the door's parent edge to compute the new
+      // fractional centre. Doors slide along their wall; they don't jump off.
+      const room = state.rooms.find(r => r.id === selectDrag.roomId);
+      if (room) {
+        const door = (room.doors || []).find(d => d.id === selectDrag.doorId);
+        if (door) {
+          const a = room.vertices[door.edgeIndex];
+          const b = room.vertices[(door.edgeIndex + 1) % room.vertices.length];
+          const ex = b.x - a.x, ey = b.y - a.y;
+          const lenSq = ex * ex + ey * ey || 1;
+          const t = ((wp.x - a.x) * ex + (wp.y - a.y) * ey) / lenSq;
+          setDoorCenter(selectDrag.roomId, selectDrag.doorId, t);
+        }
+      }
+    }
+    return;
+  }
   // Live preview while drawing a custom polygon: dashed lead-in from the last
   // placed corner to the snapped cursor, plus a dashed closing line back to
   // the first corner once we have ≥3 placed corners.
@@ -356,6 +445,11 @@ function onPointerUp(e) {
   }
   if (imageDrag) {
     imageDrag = null;
+    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    return;
+  }
+  if (selectDrag) {
+    selectDrag = null;
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
     return;
   }

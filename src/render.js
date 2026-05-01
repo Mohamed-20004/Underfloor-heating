@@ -174,12 +174,12 @@ function drawTracingImage() {
     x: img.x, y: img.y, width: img.w, height: img.h,
     href: img.src, opacity: img.opacity ?? 0.5,
     preserveAspectRatio: 'none',
-    'pointer-events': state.mode === 'move-image' ? 'auto' : 'none',
+    'pointer-events': state.mode === 'add-image' ? 'auto' : 'none',
     'data-trace-image': '1',
   }, layers.trace);
-  // When the user is in Move Image mode, draw a dashed outline and a corner
-  // resize handle so they have a clear visual target.
-  if (state.mode === 'move-image') {
+  // When the Image tool is active, draw a dashed outline and a corner
+  // resize handle so the user has a clear visual target.
+  if (state.mode === 'add-image') {
     svg('rect', {
       x: img.x, y: img.y, width: img.w, height: img.h,
       class: 'trace-outline',

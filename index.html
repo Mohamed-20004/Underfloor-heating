@@ -14,7 +14,8 @@
       <span class="subtitle">Underfloor Heating Layout Designer</span>
     </div>
     <div class="actions">
-      <button id="btn-undo" class="btn" title="Undo last change (⌘Z)" disabled>↶ Undo</button>
+      <button id="btn-undo" class="btn" title="Undo (⌘Z)" disabled>↶ Undo</button>
+      <button id="btn-redo" class="btn" title="Redo (⇧⌘Z)" disabled>↷ Redo</button>
       <button id="btn-sample" class="btn">Load Sample</button>
       <button id="btn-clear" class="btn">Clear All</button>
       <button id="btn-generate" class="btn primary">Generate Layout</button>
@@ -39,25 +40,22 @@
       <section class="panel">
         <h3>Tools</h3>
         <div class="tool-grid">
-          <button class="tool" data-mode="select" title="Select / move">↖ Select</button>
-          <button class="tool" data-mode="draw-room" title="Drag to draw a rectangular room">▭ Room</button>
-          <button class="tool" data-mode="draw-custom" title="Tap corners to draw a custom-shape room">⬡ Custom</button>
-          <button class="tool" data-mode="edit-walls" title="Tap a wall to toggle external/internal">┘ Wall</button>
-          <button class="tool" data-mode="add-wall" title="Two taps to draw a single wall (no need to close a shape)">+ Wall</button>
-          <button class="tool" data-mode="add-door" title="Tap a wall to add a door">⌷ Door</button>
-          <button class="tool" data-mode="merge-walls" title="Tap a vertex to merge its two walls into one">↔ Merge</button>
-          <button class="tool" data-mode="place-manifold" title="Place manifold">◉ Manifold</button>
-          <button class="tool" data-mode="draw-nogo" title="Draw no-go zone">▨ No-Go</button>
-          <button class="tool" data-mode="move-image" title="Drag the tracing image to position; corner handle resizes">▣ Move Image</button>
-          <button class="tool" data-mode="delete" title="Delete on click">✕ Delete</button>
+          <button class="tool" data-mode="select" title="Tap to select a room, wall or door — then drag it to move">↖ Select</button>
+          <button class="tool" data-mode="draw-custom" title="Tap corners to draw a custom-shape room">⬡ Room</button>
+          <button class="tool" data-mode="add-wall" title="Two taps to draw a single wall (no closure required)">┃ Wall</button>
+          <button class="tool" data-mode="add-door" title="Tap on a wall to add a door">⌷ Door</button>
+          <button class="tool" data-mode="place-manifold" title="Tap to place the manifold">◉ Manifold</button>
+          <button class="tool" data-mode="draw-nogo" title="Drag inside a room to mark a no-pipe zone">▨ No Zone</button>
+          <button class="tool" data-mode="add-image" title="Add or replace a tracing image">🖼 Image</button>
+          <button class="tool" data-mode="delete" title="Tap a room, wall or door to delete it">✕ Delete</button>
         </div>
         <p class="hint" id="tool-hint">Pick a tool above to begin.</p>
       </section>
 
       <section class="panel">
         <h3>Tracing Image</h3>
-        <p class="hint">Load a floor-plan photo, scan, or PDF page to draw over.</p>
-        <input id="trace-file" type="file" accept="image/*" style="margin-bottom:8px;" />
+        <p class="hint">Use the 🖼 Image tool in the toolbar to load a floor-plan photo or scan to draw over.</p>
+        <input id="trace-file" type="file" accept="image/*" style="display:none;" />
         <div id="trace-controls" hidden>
           <label>Width
             <input id="trace-width" type="number" value="10" min="0.5" max="60" step="0.1" />
@@ -66,7 +64,7 @@
           <label>Opacity
             <input id="trace-opacity" type="range" min="0" max="100" value="50" />
           </label>
-          <p class="hint" style="margin-top:6px;">Use the <strong>▣ Move Image</strong> tool to drag it on the canvas. Drag the small square at the bottom-right corner to resize.</p>
+          <p class="hint" style="margin-top:6px;">With the 🖼 Image tool active, drag on the canvas to move the image; drag the small bottom-right square to resize.</p>
           <button id="trace-remove" class="btn" style="width:100%;margin-top:6px;">Remove image</button>
         </div>
       </section>
@@ -96,6 +94,17 @@
     </section>
 
     <aside class="sidebar right">
+      <section class="panel" id="wall-panel" hidden>
+        <h3>Selected Wall</h3>
+        <p class="meta">Length: <span id="wall-length">—</span> m</p>
+        <label>Type
+          <select id="wall-kind">
+            <option value="external">External (outside facing — tighter pipe spacing)</option>
+            <option value="internal">Internal (between rooms or freestanding)</option>
+          </select>
+        </label>
+      </section>
+
       <section class="panel" id="room-panel">
         <h3>Selected Room</h3>
         <p class="hint" id="room-empty">No room selected.</p>
