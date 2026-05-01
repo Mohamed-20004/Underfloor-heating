@@ -305,12 +305,23 @@ function drawWalls() {
     const vs = room.vertices || [];
     const kinds = room.edgeKinds || [];
     for (let i = 0; i < vs.length; i++) {
-      // Skip hidden walls entirely — no line, no length label, no doors.
-      if (kinds[i] === 'hidden') continue;
       const a = vs[i], b = vs[(i + 1) % vs.length];
       const len = Math.hypot(b.x - a.x, b.y - a.y);
       const seg = { a, b, length: len };
       const isSelected = sel.type === 'wall' && sel.roomId === room.id && sel.edgeIndex === i;
+      // Hidden walls render as a faint dashed hint so they remain tappable
+      // (and selectable) — the user can still pick them with the Select
+      // tool to restore them via the sidebar dropdown. No length label and
+      // no doors render on a hidden edge.
+      if (kinds[i] === 'hidden') {
+        svg('line', {
+          x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+          class: 'wall hidden' + (isSelected ? ' selected' : ''),
+          'data-room-id': room.id,
+          'data-edge-index': i,
+        }, layers.walls);
+        continue;
+      }
       const cls = wallClass(kinds[i]) + (isSelected ? ' selected' : '');
       const doors = (room.doors || []).filter(d => d.edgeIndex === i);
       const subSegs = breakWallByDoors(seg, doors);

@@ -7,6 +7,58 @@ import { generateRoomPath } from './patterns.js';
 import { polylineLength, bbox, dist, eps } from './geometry.js';
 import { routeTail } from './doors.js';
 
+// Group rooms that share hidden edges into a single "merged area" so pipes
+// can flow continuously across deleted walls. Two rooms are in the same
+// group if they share an edge whose endpoints match (in either direction)
+// and that edge is hidden on at least one side. Returns an array of arrays
+// of rooms.
+export function findMergedGroups(rooms) {
+  const parent = new Map(rooms.map(r => [r.id, r.id]));
+  const find = id => {
+    while (parent.get(id) !== id) {
+      parent.set(id, parent.get(parent.get(id)));
+      id = parent.get(id);
+    }
+    return id;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      if (haveSharedHiddenEdge(rooms[i], rooms[j])) union(rooms[i].id, rooms[j].id);
+    }
+  }
+  const groups = new Map();
+  for (const r of rooms) {
+    const root = find(r.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(r);
+  }
+  return [...groups.values()];
+}
+
+function haveSharedHiddenEdge(a, b) {
+  for (let i = 0; i < a.vertices.length; i++) {
+    if (a.edgeKinds[i] !== 'hidden') continue;
+    const a1 = a.vertices[i], a2 = a.vertices[(i + 1) % a.vertices.length];
+    for (let j = 0; j < b.vertices.length; j++) {
+      // Match on geometry; the other side may or may not also be 'hidden'
+      // because state.hideRoomEdge auto-mirrors, but we don't require it.
+      const b1 = b.vertices[j], b2 = b.vertices[(j + 1) % b.vertices.length];
+      const sameEdge = (closeTo(a1, b1) && closeTo(a2, b2)) ||
+                       (closeTo(a1, b2) && closeTo(a2, b1));
+      if (sameEdge) return true;
+    }
+  }
+  return false;
+}
+
+function closeTo(p, q, tol = 1) {
+  return Math.abs(p.x - q.x) < tol && Math.abs(p.y - q.y) < tol;
+}
+
 // Detect a 4-vertex axis-aligned rectangle so we can apply the rectangular
 // zone-split fast path. Non-rectangular polygons keep zoneCount=1 for now.
 function rectInfo(vertices) {
@@ -99,20 +151,33 @@ export function generateLoops(state) {
   let loopIndex = 1;
   let nextGroup = 1;
 
-  for (const room of rooms) {
-    if (!room.doors || room.doors.length === 0) {
-      warnings.push({ level: 'warn', message: `${room.name}: no door defined — pipe tails will run as straight lines and may cross walls. Use the Door tool.` });
+  // Group rooms connected through hidden walls. Each group is processed once
+  // — the primary room generates the path that covers the whole merged area.
+  // Other rooms in the group don't generate their own loops (avoid duplicate
+  // coverage). Multi-zone is honoured only on single-room groups.
+  const groups = findMergedGroups(rooms);
+
+  for (const group of groups) {
+    const primary = group[0];
+    const others = group.slice(1);
+    if (!primary.doors || primary.doors.length === 0) {
+      warnings.push({ level: 'warn', message: `${primary.name}: no door defined — pipe tails will run as straight lines and may cross walls. Use the Door tool.` });
     }
-    // Each declared zone becomes an independent thermal group with its own loop(s).
-    const subs = expandZones(room);
+    if (others.length > 0) {
+      const names = group.map(r => r.name).join(' + ');
+      warnings.push({ level: 'warn', message: `${names}: rooms merged through deleted walls — covered by one continuous loop.` });
+    }
+    // Multi-zone splitting only meaningful for single rooms; groups treat the
+    // merged area as one zone for now.
+    const subs = others.length === 0 ? expandZones(primary) : [{ ...primary, zoneOf: primary.id, zoneIndex: 1, zoneCount: 1, parentRoomId: primary.id }];
     for (const sub of subs) {
-      const path = generateRoomPath(sub, config, state.walls || []);
+      const path = generateRoomPath(sub, config, state.walls || [], others);
       if (!path || path.length < 2) {
         warnings.push({ level: 'warn', message: `${sub.name}: no valid pipe path (zone too small or fully obstructed).` });
         continue;
       }
       const pipeLen = polylineLength(path);
-      const builtLoops = buildLoopsForPath(path, pipeLen, sub, room, manifold, config, () => loopIndex++);
+      const builtLoops = buildLoopsForPath(path, pipeLen, sub, primary, manifold, config, () => loopIndex++);
       const groupNo = nextGroup++;
       for (const l of builtLoops) l.group = groupNo;
       loops.push(...builtLoops);

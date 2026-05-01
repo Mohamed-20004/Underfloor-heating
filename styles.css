@@ -229,8 +229,9 @@ body {
 .wall.external { stroke: #2c3340; stroke-width: 80; }
 .wall.internal { stroke: #6b7587; stroke-width: 50; stroke-dasharray: 0; }
 .wall.partition { stroke: #b4bcc8; stroke-width: 30; stroke-dasharray: 60 60; }
+.wall.hidden { stroke: #cdd2da; stroke-width: 25; stroke-dasharray: 40 90; opacity: 0.6; }
 .wall.hover { stroke: var(--primary); }
-.wall.selected { stroke: #f5c126; stroke-width: 110; stroke-dasharray: 0; }
+.wall.selected { stroke: #f5c126; stroke-width: 110; stroke-dasharray: 0; opacity: 1; }
 .wall-length {
   fill: #5a6477;
   font-family: -apple-system, sans-serif;

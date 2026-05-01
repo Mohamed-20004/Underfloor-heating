@@ -14,14 +14,27 @@ import {
   eps,
 } from './geometry.js';
 
-export function generateRoomPath(room, config, walls = []) {
+export function generateRoomPath(room, config, walls = [], mergedWith = []) {
   const pattern = room.pattern || 'serpentine';
-  // Filter walls to those whose bounding box overlaps the room's bbox so the
-  // wall-clip step has fewer candidates per row.
-  const relevant = filterRelevantWalls(room, walls || []);
-  if (pattern === 'bifilar') return generateBifilar(room, config, relevant);
-  if (pattern === 'hybrid') return generateHybrid(room, config, relevant);
-  return generateSerpentine(room, config, relevant);
+  // For wall filtering we need to consider the entire merged area's bbox.
+  const bboxRooms = [room, ...mergedWith];
+  const relevant = filterRelevantWallsForRooms(bboxRooms, walls || []);
+  if (pattern === 'bifilar') return generateBifilar(room, config, relevant, mergedWith);
+  if (pattern === 'hybrid') return generateHybrid(room, config, relevant, mergedWith);
+  return generateSerpentine(room, config, relevant, mergedWith);
+}
+
+function filterRelevantWallsForRooms(rooms, walls) {
+  if (!walls.length || !rooms.length) return [];
+  const allVerts = rooms.flatMap(r => r.vertices || []);
+  const b = bbox(allVerts);
+  const margin = 100;
+  return walls.filter(w => {
+    const wxMin = Math.min(w.a.x, w.b.x), wxMax = Math.max(w.a.x, w.b.x);
+    const wyMin = Math.min(w.a.y, w.b.y), wyMax = Math.max(w.a.y, w.b.y);
+    return !(wxMax + margin < b.x || wxMin - margin > b.x + b.w ||
+             wyMax + margin < b.y || wyMin - margin > b.y + b.h);
+  });
 }
 
 function filterRelevantWalls(room, walls) {
@@ -72,24 +85,29 @@ function setbacksForRoom(room, wallSetback) {
 // Serpentine (meander) — works on any axis-aligned polygon.
 // -----------------------------------------------------------------------------
 
-function generateSerpentine(room, config, walls = []) {
+function generateSerpentine(room, config, walls = [], mergedWith = []) {
   const { wallSetback, edgeSpacing, pipeSpacing, edgeZoneWidth } = config;
   const ext = longestExternalWall(room);
   if (!ext) return [];
-  const b = bbox(room.vertices);
-  const sb = setbacksForRoom(room, wallSetback);
+  // For merged groups, work over the union of all rooms' bounding boxes and
+  // use a uniform setback at every row endpoint (per-side rectangle setbacks
+  // only make sense for a single rectangular room).
+  const isMerged = mergedWith.length > 0;
+  const allRooms = [room, ...mergedWith];
+  const b = isMerged ? bbox(allRooms.flatMap(r => r.vertices)) : bbox(room.vertices);
+  const sb = isMerged
+    ? { n: wallSetback, e: wallSetback, s: wallSetback, w: wallSetback }
+    : setbacksForRoom(room, wallSetback);
   if (b.w <= sb.w + sb.e || b.h <= sb.n + sb.s) return [];
 
-  // Determine row direction from the spine edge's axis.
+  // Determine row direction from the primary room's spine edge.
   const horizontalSpine = ext.axis === 'h';
-  // Stack range (perpendicular to rows) uses N/S setbacks for horizontal spine,
-  // W/E setbacks for vertical spine.
+  // Stack range (perpendicular to rows) uses N/S setbacks for horizontal
+  // spine, W/E for vertical spine.
   const stackMin = horizontalSpine ? b.y + sb.n : b.x + sb.w;
   const stackMax = horizontalSpine ? b.y + b.h - sb.s : b.x + b.w - sb.e;
   if (stackMax <= stackMin) return [];
 
-  // Lateral inset (along the row direction): how much each row is shortened
-  // at its start/end. For horizontal spine: W inset at start, E inset at end.
   const lateralStartInset = horizontalSpine ? sb.w : sb.n;
   const lateralEndInset = horizontalSpine ? sb.e : sb.s;
 
@@ -115,9 +133,17 @@ function generateSerpentine(room, config, walls = []) {
   const points = [];
   for (let r = 0; r < positions.length; r++) {
     const pos = positions[r];
-    const intervals = horizontalSpine
-      ? clipHorizontalLine(pos, room.vertices)
-      : clipVerticalLine(pos, room.vertices);
+    // For merged groups, clip the row against every room's polygon and merge
+    // adjacent or overlapping intervals so the row spans both rooms when
+    // they share a hidden boundary.
+    let intervals = [];
+    for (const rm of allRooms) {
+      const ri = horizontalSpine
+        ? clipHorizontalLine(pos, rm.vertices)
+        : clipVerticalLine(pos, rm.vertices);
+      intervals.push(...ri);
+    }
+    if (intervals.length > 1) intervals = mergeAdjacentIntervals(intervals);
     if (!intervals.length) continue;
 
     // Inset each interval by per-side setbacks at the row endpoints.
@@ -126,14 +152,16 @@ function generateSerpentine(room, config, walls = []) {
       .filter(([lo, hi]) => hi - lo > 1);
     if (!inset.length) continue;
 
-    // Subtract no-go zones, then any walls (free walls act as obstacles —
-    // pipes route around them, with door openings letting pipes through).
-    // Pick the longest surviving sub-segment.
+    // Subtract no-go zones (from any room in the merged group), then any
+    // walls (free walls act as obstacles — pipes route around them, with
+    // door openings letting pipes through). Pick the longest surviving
+    // sub-segment.
+    const allNoGo = allRooms.flatMap(rm => rm.noGoZones || []);
     const candidates = [];
     for (const [lo, hi] of inset) {
       const a = horizontalSpine ? { x: lo, y: pos } : { x: pos, y: lo };
       const c = horizontalSpine ? { x: hi, y: pos } : { x: pos, y: hi };
-      const noGoSubs = subtractNoGo(a, c, horizontalSpine, room.noGoZones || []);
+      const noGoSubs = subtractNoGo(a, c, horizontalSpine, allNoGo);
       for (const seg of noGoSubs) {
         const wallSubs = subtractWalls(seg.a, seg.b, horizontalSpine, walls, wallSetback);
         candidates.push(...wallSubs);
@@ -162,6 +190,24 @@ function generateSerpentine(room, config, walls = []) {
 function segLen(s) {
   const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Merge adjacent / overlapping [lo, hi] intervals. Used when clipping a row
+// across multiple rooms in a merged group: two rooms sharing a hidden edge
+// produce abutting intervals that should be treated as one continuous span.
+function mergeAdjacentIntervals(intervals) {
+  if (intervals.length <= 1) return intervals;
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+  const out = [sorted[0].slice()];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = out[out.length - 1];
+    if (sorted[i][0] <= last[1] + 1) {
+      last[1] = Math.max(last[1], sorted[i][1]);
+    } else {
+      out.push(sorted[i].slice());
+    }
+  }
+  return out;
 }
 
 // Subtract no-go rectangles from a single axis-aligned segment, returning a
@@ -280,11 +326,12 @@ function subtractWalls(a, b, isHorizontalRow, walls, clearance) {
 // Non-rectangular polygons fall back to serpentine.
 // -----------------------------------------------------------------------------
 
-function generateBifilar(room, config, walls = []) {
-  if (!isAxisAlignedRect(room.vertices)) return generateSerpentine(room, config, walls);
+function generateBifilar(room, config, walls = [], mergedWith = []) {
+  if (mergedWith.length > 0) return generateSerpentine(room, config, walls, mergedWith);
+  if (!isAxisAlignedRect(room.vertices)) return generateSerpentine(room, config, walls, mergedWith);
   // If any free wall pierces the room's bbox, fall back to serpentine —
   // concentric spirals can't route around a wall, but serpentine can.
-  if (walls.length > 0) return generateSerpentine(room, config, walls);
+  if (walls.length > 0) return generateSerpentine(room, config, walls, mergedWith);
   const { wallSetback, edgeSpacing, pipeSpacing } = config;
   const b = bbox(room.vertices);
   const sb = setbacksForRoom(room, wallSetback);
@@ -333,6 +380,6 @@ function rectSpiral(rect, startOffset, step) {
 // Hybrid (routed) — serpentine with no-go avoidance (already built in).
 // -----------------------------------------------------------------------------
 
-function generateHybrid(room, config, walls = []) {
-  return generateSerpentine(room, config, walls);
+function generateHybrid(room, config, walls = [], mergedWith = []) {
+  return generateSerpentine(room, config, walls, mergedWith);
 }

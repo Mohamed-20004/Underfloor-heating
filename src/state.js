@@ -186,10 +186,14 @@ export function toggleWall(roomId, edgeIndex) {
   emit();
 }
 
-// Mark a polygon edge as hidden — the wall disappears visually (no line, no
-// length label, no doors rendered) but the polygon shape is preserved so the
-// pipe engine still treats the room as a closed area. Useful for "knock-
-// through" openings between rooms.
+// Mark a polygon edge as hidden — the wall fades out visually (rendered as a
+// faint dashed line that's still tappable) but the polygon shape is preserved
+// so single-room pipe routing still treats the room as closed. When two
+// rooms share an edge that becomes hidden on both sides, the rooms are
+// merged into one continuous area for pipe routing (handled in loops.js).
+//
+// To make "delete the wall between rooms" a single tap, hiding one side also
+// auto-hides the matching edge on any adjacent room.
 export function hideRoomEdge(roomId, edgeIndex) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r) return;
@@ -197,7 +201,25 @@ export function hideRoomEdge(roomId, edgeIndex) {
   if (Number.isNaN(i) || i < 0 || i >= r.edgeKinds.length) return;
   pushUndo();
   r.edgeKinds[i] = 'hidden';
+  const a = r.vertices[i];
+  const b = r.vertices[(i + 1) % r.vertices.length];
+  for (const other of state.rooms) {
+    if (other.id === r.id) continue;
+    for (let j = 0; j < other.vertices.length; j++) {
+      const oa = other.vertices[j];
+      const ob = other.vertices[(j + 1) % other.vertices.length];
+      const sameEdge = (closeTo(a, oa) && closeTo(b, ob)) ||
+                       (closeTo(a, ob) && closeTo(b, oa));
+      if (sameEdge && other.edgeKinds[j] !== 'hidden') {
+        other.edgeKinds[j] = 'hidden';
+      }
+    }
+  }
   emit();
+}
+
+function closeTo(p, q, tol = 1) {
+  return Math.abs(p.x - q.x) < tol && Math.abs(p.y - q.y) < tol;
 }
 
 export function addNoGo(roomId, rect) {

@@ -2,9 +2,9 @@
 // Avoids any DOM-dependent module.
 
 import { state, loadSample, addCustomRoom, addFreeWall, addFreeWallDoor,
-  setManifold, clearAll } from '../src/state.js';
+  setManifold, hideRoomEdge, clearAll } from '../src/state.js';
 import { generateRoomPath } from '../src/patterns.js';
-import { generateLoops } from '../src/loops.js';
+import { generateLoops, findMergedGroups } from '../src/loops.js';
 import { summarise } from '../src/calc.js';
 import { polylineLength, pointsToSmoothPath, polygonArea, clipHorizontalLine } from '../src/geometry.js';
 
@@ -156,6 +156,37 @@ assert(lenWithWall < lenBaseline, `path is shorter once a wall blocks rows (${(l
 addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
+
+console.log('# Two rooms merge into one continuous loop when their shared wall is deleted');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+const roomA = addCustomRoom([
+  { x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 },
+]);
+const roomB = addCustomRoom([
+  { x: 4000, y: 0 }, { x: 8000, y: 0 }, { x: 8000, y: 3000 }, { x: 4000, y: 3000 },
+]);
+setManifold({ x: 0, y: 0 });
+// Pre-merge: two separate groups.
+const beforeGroups = findMergedGroups(state.rooms);
+assert(beforeGroups.length === 2, `before deletion: 2 separate groups (got ${beforeGroups.length})`);
+// Delete the wall between the rooms (room A's east edge).
+// Room A vertices in CW order: 0=NW, 1=NE, 2=SE, 3=SW. East edge is index 1.
+hideRoomEdge(roomA.id, 1);
+const afterGroups = findMergedGroups(state.rooms);
+assert(afterGroups.length === 1 && afterGroups[0].length === 2, `after deletion: rooms merged into one group (got ${afterGroups.length} group(s))`);
+// Pipe gen: only one loop should cover both rooms.
+const merged = generateLoops(state);
+const loopRoomNames = new Set(merged.loops.map(l => l.parentRoomName));
+assert(loopRoomNames.size === 1, `merged group produces a single primary room loop set (got ${[...loopRoomNames].join(', ')})`);
+// The combined pipe length should be roughly the sum of two separate runs;
+// at minimum, it should be substantially more than one room alone.
+const totalPipe = merged.loops.reduce((s, l) => s + l.pipeLength, 0);
+// One room alone (12 m²) at 200 mm spacing produces roughly 70–80 m. Two
+// rooms merged should be clearly more than that.
+assert(totalPipe > 130000, `merged pipe coverage spans both rooms (got ${(totalPipe/1000).toFixed(1)} m)`);
 
 if (failures === 0) {
   console.log(`\nAll smoke tests passed (${failures} failures).`);
