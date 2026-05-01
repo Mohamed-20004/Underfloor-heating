@@ -133,7 +133,10 @@ export function addRoom(rect) {
 export function addCustomRoom(vertices) {
   if (!vertices || vertices.length < 3) return null;
   pushUndo();
-  return addRoomFromVertices(vertices, vertices.map(() => 'external'));
+  // Polygon edges of a zone aren't walls — they're just the zone's pipe-
+  // coverage boundary. Default them to 'internal' so they don't trigger
+  // edge-zone tightening; the user adds physical walls separately.
+  return addRoomFromVertices(vertices, vertices.map(() => 'internal'));
 }
 
 function addRoomFromVertices(vertices, edgeKinds) {
@@ -329,12 +332,25 @@ export function moveFreeWallBy(wallId, dx, dy) {
   emit();
 }
 
-// Slide a door along its parent edge to the given fractional centre (0..1).
+// Slide a door along its parent edge (room or free wall) to the given
+// fractional centre (0..1).
 let lastDoorDragAt = 0;
 export function setDoorCenter(roomId, doorId, center) {
   const r = state.rooms.find(r => r.id === roomId);
   if (!r) return;
   const d = (r.doors || []).find(d => d.id === doorId);
+  if (!d) return;
+  const now = Date.now();
+  if (now - lastDoorDragAt > 500) pushUndo();
+  lastDoorDragAt = now;
+  d.center = Math.max(0.05, Math.min(0.95, center));
+  emit();
+}
+
+export function setFreeWallDoorCenter(wallId, doorId, center) {
+  const w = (state.walls || []).find(w => w.id === wallId);
+  if (!w) return;
+  const d = (w.doors || []).find(d => d.id === doorId);
   if (!d) return;
   const now = Date.now();
   if (now - lastDoorDragAt > 500) pushUndo();

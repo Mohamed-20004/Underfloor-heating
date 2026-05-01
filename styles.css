@@ -223,8 +223,21 @@ body {
 .warnings li.ok { background: #e9f5ed; color: var(--ok); }
 
 /* SVG element styles */
-.room-rect { fill: #fafbfc; stroke: #b4bcc8; stroke-width: 30; }
-.room-rect.selected { stroke: var(--primary); stroke-width: 40; }
+.room-rect {
+  /* Pipe coverage zone — a tinted area outlined with a faint dashed line so
+     the user can see the zone's extent without it visually competing with
+     real walls (which are drawn separately via the Wall tool). */
+  fill: rgba(29, 111, 196, 0.07);
+  stroke: #b4bcc8;
+  stroke-width: 30;
+  stroke-dasharray: 120 80;
+}
+.room-rect.selected {
+  fill: rgba(29, 111, 196, 0.12);
+  stroke: var(--primary);
+  stroke-width: 50;
+  stroke-dasharray: 0;
+}
 .wall { stroke-linecap: square; }
 .wall.external { stroke: #2c3340; stroke-width: 80; }
 .wall.internal { stroke: #6b7587; stroke-width: 50; stroke-dasharray: 0; }
@@ -286,13 +299,28 @@ body {
   pointer-events: none;
 }
 .manifold {
-  fill: var(--accent-soft);
-  stroke: var(--accent);
-  stroke-width: 50;
+  fill: var(--accent);
+  stroke: white;
+  stroke-width: 60;
+}
+.manifold-halo {
+  fill: rgba(196, 38, 46, 0.15);
+  stroke: rgba(196, 38, 46, 0.40);
+  stroke-width: 30;
+  pointer-events: none;
 }
 .manifold-label {
   fill: var(--accent);
   font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: white;
+  stroke-width: 40;
+}
+.manifold-label-inside {
+  fill: white;
+  font-weight: 800;
   text-anchor: middle;
   pointer-events: none;
 }

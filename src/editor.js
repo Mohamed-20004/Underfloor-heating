@@ -4,7 +4,8 @@
 import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
   addDoor, deleteDoor, addFreeWall, deleteFreeWall, addFreeWallDoor, deleteFreeWallDoor,
   selectRoom, clearSelection, setManifold, toggleWall, hideRoomEdge, emit,
-  updateTracingImage, moveRoomBy, moveFreeWallBy, setDoorCenter } from './state.js';
+  updateTracingImage, moveRoomBy, moveFreeWallBy, setDoorCenter,
+  setFreeWallDoorCenter } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -90,12 +91,17 @@ function nearestFreeWall(p, tolerance) {
   return best;
 }
 
-// Return { roomId, doorId } if the pointer event hit a door's transparent
-// click target, else null.
+// Return { roomId, freeWallId, doorId } if the pointer event hit a door's
+// transparent click target, else null. Either roomId or freeWallId is set
+// depending on which kind of wall the door lives on.
 function doorAt(target) {
   if (!target || !target.dataset) return null;
   if (!target.dataset.doorId) return null;
-  return { roomId: target.dataset.roomId, doorId: target.dataset.doorId };
+  return {
+    roomId: target.dataset.roomId,
+    freeWallId: target.dataset.freeWallId,
+    doorId: target.dataset.doorId,
+  };
 }
 
 // Find the nearest polygon edge across all rooms within `tolerance` mm.
@@ -230,37 +236,19 @@ function onPointerDown(e) {
       break;
     }
     case 'add-door': {
-      // Pick the closest wall — free wall or room polygon edge — and place a
-      // door there. Doors attach to whichever surface is nearest the tap.
-      const tol = 1000;
-      const fw = nearestFreeWall(wp, tol);
-      const fwDist = fw ? pointSegDist(wp, fw.a.x, fw.a.y, fw.b.x, fw.b.y) : Infinity;
-      const re = nearestRoomEdge(wp, tol);
-      const reDist = re ? re.distance : Infinity;
-      if (fw && fwDist <= reDist) {
-        // Project the click onto the free wall to compute the fractional centre.
-        const dx = fw.b.x - fw.a.x, dy = fw.b.y - fw.a.y;
-        const lenSq = dx * dx + dy * dy || 1;
-        const t = ((wp.x - fw.a.x) * dx + (wp.y - fw.a.y) * dy) / lenSq;
-        addFreeWallDoor(fw.id, t, 800);
-        onStatus('Added door on free wall.');
+      // Doors attach only to walls drawn with the Wall tool. Zones (polygon
+      // areas) don't have walls, so there's nothing to attach a door to on
+      // a zone edge.
+      const fw = nearestFreeWall(wp, 1000);
+      if (!fw) {
+        onStatus('Tap on a wall to place a door. Draw walls with the Wall tool first.');
         break;
       }
-      if (re) {
-        const room = state.rooms.find(r => r.id === re.roomId);
-        if (!room) break;
-        // Compute the fractional centre along the polygon edge.
-        const a = room.vertices[re.edgeIndex];
-        const b = room.vertices[(re.edgeIndex + 1) % room.vertices.length];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const lenSq = dx * dx + dy * dy || 1;
-        const t = ((wp.x - a.x) * dx + (wp.y - a.y) * dy) / lenSq;
-        const center = Math.max(0.05, Math.min(0.95, t));
-        addDoor(re.roomId, re.edgeIndex, center, 800);
-        onStatus(`Added door on ${room.name}.`);
-        break;
-      }
-      onStatus('Tap on a wall (room edge or free wall) to place a door.');
+      const dx = fw.b.x - fw.a.x, dy = fw.b.y - fw.a.y;
+      const lenSq = dx * dx + dy * dy || 1;
+      const t = ((wp.x - fw.a.x) * dx + (wp.y - fw.a.y) * dy) / lenSq;
+      addFreeWallDoor(fw.id, t, 800);
+      onStatus('Door added.');
       break;
     }
     case 'merge-walls': {
@@ -348,12 +336,16 @@ function onPointerDown(e) {
     }
     case 'select':
     default: {
-      // Priority: door → free wall → room edge (polygon wall) → room area.
-      // Doors and walls are easier targets than the room area underneath them.
+      // Priority: door → free wall → zone area. Polygon edges aren't
+      // selectable any more — zones are pipe-coverage areas, not walls.
       const door = doorAt(e.target);
       if (door) {
-        state.selection = { type: 'door', roomId: door.roomId, doorId: door.doorId };
-        selectDrag = { kind: 'door', roomId: door.roomId, doorId: door.doorId, last: wp };
+        state.selection = door.freeWallId
+          ? { type: 'free-wall-door', wallId: door.freeWallId, doorId: door.doorId }
+          : { type: 'door', roomId: door.roomId, doorId: door.doorId };
+        selectDrag = door.freeWallId
+          ? { kind: 'free-wall-door', wallId: door.freeWallId, doorId: door.doorId, last: wp }
+          : { kind: 'door', roomId: door.roomId, doorId: door.doorId, last: wp };
         canvas.setPointerCapture(e.pointerId);
         emit();
         break;
@@ -363,15 +355,6 @@ function onPointerDown(e) {
         state.selection = { type: 'free-wall', wallId: fw.id };
         selectDrag = { kind: 'free-wall', wallId: fw.id, last: wp };
         canvas.setPointerCapture(e.pointerId);
-        emit();
-        break;
-      }
-      // Polygon edge near the click — selects an individual wall of a room
-      // so the user can flip its type via the sidebar.
-      const re = nearestRoomEdge(wp, 400);
-      if (re) {
-        state.selection = { type: 'wall', roomId: re.roomId, edgeIndex: re.edgeIndex };
-        selectDrag = null;
         emit();
         break;
       }
@@ -440,8 +423,7 @@ function onPointerMove(e) {
     } else if (selectDrag.kind === 'free-wall') {
       moveFreeWallBy(selectDrag.wallId, dx, dy);
     } else if (selectDrag.kind === 'door') {
-      // Project the cursor onto the door's parent edge to compute the new
-      // fractional centre. Doors slide along their wall; they don't jump off.
+      // Doors slide along their parent wall; they don't jump off.
       const room = state.rooms.find(r => r.id === selectDrag.roomId);
       if (room) {
         const door = (room.doors || []).find(d => d.id === selectDrag.doorId);
@@ -453,6 +435,14 @@ function onPointerMove(e) {
           const t = ((wp.x - a.x) * ex + (wp.y - a.y) * ey) / lenSq;
           setDoorCenter(selectDrag.roomId, selectDrag.doorId, t);
         }
+      }
+    } else if (selectDrag.kind === 'free-wall-door') {
+      const w = (state.walls || []).find(w => w.id === selectDrag.wallId);
+      if (w) {
+        const ex = w.b.x - w.a.x, ey = w.b.y - w.a.y;
+        const lenSq = ex * ex + ey * ey || 1;
+        const t = ((wp.x - w.a.x) * ex + (wp.y - w.a.y) * ey) / lenSq;
+        setFreeWallDoorCenter(selectDrag.wallId, selectDrag.doorId, t);
       }
     }
     return;

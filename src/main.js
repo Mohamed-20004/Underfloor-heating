@@ -70,16 +70,16 @@ $$('.tool').forEach(btn => {
 
 function toolHint(mode) {
   switch (mode) {
-    case 'select': return 'Tap a room, wall or door to select. Drag the selection to move it.';
-    case 'draw-custom': return 'Tap each corner in turn (edges snap horizontal/vertical). Tap near the first corner to close the room.';
-    case 'add-wall': return 'Tap once for the start of the wall, then again for the other end. Snaps to horizontal/vertical.';
-    case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
-    case 'place-manifold': return 'Tap anywhere to place the manifold.';
-    case 'draw-nogo': return 'Drag inside a room to mark an area pipes should avoid.';
+    case 'select': return 'Tap a zone, wall or door to select. Drag to move.';
+    case 'draw-custom': return 'Outline a pipe-coverage zone — tap each corner in turn (edges snap horizontal/vertical), then tap near the first corner to close.';
+    case 'add-wall': return 'Tap once for the start of a wall, then again for the other end. Walls block pipes; doors create gaps.';
+    case 'add-door': return 'Tap on a wall to add a door — pipes pass through it. Walls only; zones don\'t have walls.';
+    case 'place-manifold': return 'Tap anywhere to place the manifold (the red pin).';
+    case 'draw-nogo': return 'Drag inside a zone to mark an area pipes must avoid.';
     case 'add-image': return state.tracingImage
-      ? 'Drag the image to move; drag the bottom-right square to resize. Tap "Image" again or use the sidebar to replace.'
-      : 'Tap anywhere to choose a floor-plan image to draw over.';
-    case 'delete': return 'Tap a wall, door or room to delete it.';
+      ? 'Drag the image to position it; drag the bottom-right square to resize.'
+      : 'Tap to choose a floor-plan photo or scan to trace over.';
+    case 'delete': return 'Tap a wall, door, zone or no-zone to delete it.';
     default: return '';
   }
 }

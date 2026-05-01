@@ -99,7 +99,10 @@ export function fitToContent() {
   // fresh project starts with the whole work area in view.
   let b;
   if (all.length < 2) {
-    b = { x: WORLD_BOUNDS.x, y: WORLD_BOUNDS.y, w: WORLD_BOUNDS.w, h: WORLD_BOUNDS.h };
+    // Empty canvas: focus on a 16 m × 16 m work area in the top-left rather
+    // than the full 32 m bounds, so widgets and the manifold are at a usable
+    // size right away. The user can pinch out for the full canvas.
+    b = { x: WORLD_BOUNDS.x, y: WORLD_BOUNDS.y, w: 16000, h: 16000 };
   } else {
     b = bbox(all);
   }
@@ -370,48 +373,12 @@ function drawRooms() {
 }
 
 function drawWalls() {
+  // Polygon zones no longer draw their edges as walls — walls are exclusively
+  // free-wall objects drawn with the Wall tool. We still render selected-room
+  // vertex handles here so they sit above the zone fill.
   clear(layers.walls);
-  const sel = state.selection;
   for (const room of state.rooms) {
     const vs = room.vertices || [];
-    const kinds = room.edgeKinds || [];
-    for (let i = 0; i < vs.length; i++) {
-      const a = vs[i], b = vs[(i + 1) % vs.length];
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      const seg = { a, b, length: len };
-      const isSelected = sel.type === 'wall' && sel.roomId === room.id && sel.edgeIndex === i;
-      // Hidden walls render as a faint dashed hint so they remain tappable
-      // (and selectable) — the user can still pick them with the Select
-      // tool to restore them via the sidebar dropdown. No length label and
-      // no doors render on a hidden edge.
-      if (kinds[i] === 'hidden') {
-        svg('line', {
-          x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-          class: 'wall hidden' + (isSelected ? ' selected' : ''),
-          'data-room-id': room.id,
-          'data-edge-index': i,
-        }, layers.walls);
-        continue;
-      }
-      const cls = wallClass(kinds[i]) + (isSelected ? ' selected' : '');
-      const doors = (room.doors || []).filter(d => d.edgeIndex === i);
-      const subSegs = breakWallByDoors(seg, doors);
-      for (const sub of subSegs) {
-        svg('line', {
-          x1: sub.a.x, y1: sub.a.y, x2: sub.b.x, y2: sub.b.y,
-          class: cls,
-          'data-room-id': room.id,
-          'data-edge-index': i,
-        }, layers.walls);
-      }
-      // Length label, offset outward from the wall midpoint.
-      drawWallLengthLabel(room, vs, i, len);
-    }
-    // Doors (skip those whose parent edge is hidden) and vertex handles.
-    for (const d of room.doors || []) {
-      if (kinds[d.edgeIndex] === 'hidden') continue;
-      drawDoor(room, d);
-    }
     const showHandles = state.selection.id === room.id || state.mode === 'merge-walls';
     if (showHandles) {
       for (let v = 0; v < vs.length; v++) drawVertexHandle(room, v, vs[v]);
@@ -545,23 +512,24 @@ function drawManifold() {
   clear(layers.manifold);
   if (!state.manifold) return;
   const m = state.manifold;
-  const size = 400;
+  const size = 600;
+  // Halo: a soft red disc behind the manifold marker so it stands out at any
+  // zoom — especially when the user is fitted to the whole 32 m bounded view.
+  svg('circle', {
+    cx: m.x, cy: m.y, r: size,
+    class: 'manifold-halo',
+  }, layers.manifold);
   svg('rect', {
     x: m.x - size / 2, y: m.y - size / 2,
     width: size, height: size,
     class: 'manifold',
-    rx: 30,
+    rx: 50,
   }, layers.manifold);
   svg('text', {
-    x: m.x, y: m.y - size / 2 - 80,
-    class: 'manifold-label',
-    'font-size': 140,
-  }, layers.manifold).textContent = 'M1';
-  svg('text', {
-    x: m.x, y: m.y + 50,
-    class: 'manifold-label',
-    'font-size': 100,
-  }, layers.manifold).textContent = '◉';
+    x: m.x, y: m.y + 100,
+    class: 'manifold-label-inside',
+    'font-size': 320,
+  }, layers.manifold).textContent = 'M';
 }
 
 function drawPipes() {
