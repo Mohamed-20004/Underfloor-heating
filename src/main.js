@@ -4,7 +4,7 @@ import { state, setMode, subscribe, emit, loadSample, clearAll, updateRoom,
   toggleWall, setLoops, clearLoops, setTracingImage, updateTracingImage,
   removeTracingImage, undo, canUndo } from './state.js';
 import { initRenderer, render, fitToContent, applyView, setViewport } from './render.js';
-import { initEditor, resetCustomPolygon } from './editor.js';
+import { initEditor, resetCustomPolygon, resetFreeWall } from './editor.js';
 import { generateLoops } from './loops.js';
 import { summarise } from './calc.js';
 import { exportSVG, exportCSV, printDrawing } from './export.js';
@@ -56,6 +56,7 @@ $$('.tool').forEach(btn => {
   btn.addEventListener('click', () => {
     setMode(btn.dataset.mode);
     if (btn.dataset.mode !== 'draw-custom') resetCustomPolygon();
+    if (btn.dataset.mode !== 'add-wall') resetFreeWall();
     setStatus(toolHint(btn.dataset.mode));
     $('#tool-hint').textContent = toolHint(btn.dataset.mode);
   });
@@ -67,12 +68,13 @@ function toolHint(mode) {
     case 'draw-room': return 'Drag to draw a rectangular room.';
     case 'draw-custom': return 'Tap each corner in turn (edges snap to horizontal/vertical). Tap near the first corner to close.';
     case 'edit-walls': return 'Tap on (or near) a wall to toggle external/internal.';
+    case 'add-wall': return 'Tap once for the start, then again for the other end — the wall snaps to horizontal/vertical and confirms on the second tap.';
     case 'add-door': return 'Tap on (or near) a wall to drop a door — pipe tails will route through it.';
     case 'merge-walls': return 'Tap a vertex (white circle) to merge the two walls meeting there into one.';
     case 'place-manifold': return 'Tap anywhere to place the manifold.';
     case 'draw-nogo': return 'Drag inside a room to add a no-go zone.';
     case 'move-image': return 'Drag the tracing image to position it. Drag the small square at the bottom-right corner to resize.';
-    case 'delete': return 'Tap a vertex to merge walls, or a room / door / no-go to delete.';
+    case 'delete': return 'Tap a vertex to merge walls; tap a wall, room, door, or no-go to delete it.';
     default: return '';
   }
 }

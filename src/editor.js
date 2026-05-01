@@ -2,8 +2,8 @@
 // mode-specific actions to the state module. Pan/zoom is built in.
 
 import { state, addRoom, addCustomRoom, addNoGo, deleteRoom, deleteNoGo, deleteVertex,
-  addDoor, deleteDoor, selectRoom, clearSelection, setManifold, toggleWall, emit,
-  updateTracingImage } from './state.js';
+  addDoor, deleteDoor, addFreeWall, deleteFreeWall, selectRoom, clearSelection,
+  setManifold, toggleWall, emit, updateTracingImage } from './state.js';
 import { clientToWorld, showPreviewRect, clearPreview, applyView, render } from './render.js';
 
 let canvas;
@@ -15,6 +15,8 @@ let onStatus = () => {};
 let customVerts = null;
 // Tracing-image drag state: { mode: 'move'|'resize', startX, startY, imgX0, imgY0, imgW0 }.
 let imageDrag = null;
+// Free-wall drawing buffer: the first tapped point waiting for a second tap.
+let wallStart = null;
 
 export function initEditor(canvasEl, opts = {}) {
   canvas = canvasEl;
@@ -31,6 +33,53 @@ export function initEditor(canvasEl, opts = {}) {
 export function resetCustomPolygon() {
   customVerts = null;
   showPreviewPolygon(null);
+}
+
+export function resetFreeWall() {
+  wallStart = null;
+  showPreviewFreeWall(null, null);
+}
+
+function showPreviewFreeWall(a, b) {
+  const layer = document.querySelector('#canvas g[data-layer="preview"]');
+  if (!layer) return;
+  layer.innerHTML = '';
+  if (!a) return;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const make = (tag, attrs = {}) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    layer.appendChild(el);
+    return el;
+  };
+  make('circle', { cx: a.x, cy: a.y, r: 100, class: 'preview-close-target' });
+  if (!b || (a.x === b.x && a.y === b.y)) return;
+  make('line', {
+    x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+    class: 'preview-dashed',
+  });
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 200) return;
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const nx = -dy / len, ny = dx / len;
+  const off = 220;
+  make('text', {
+    x: mx + nx * off, y: my + ny * off + 35,
+    class: 'preview-length live',
+    'font-size': 110,
+    'text-anchor': 'middle',
+  }).textContent = `${(len / 1000).toFixed(2)} m`;
+}
+
+function nearestFreeWall(p, tolerance) {
+  if (!Array.isArray(state.walls)) return null;
+  let best = null, bestDist = tolerance;
+  for (const w of state.walls) {
+    const d = pointSegDist(p, w.a.x, w.a.y, w.b.x, w.b.y);
+    if (d < bestDist) { bestDist = d; best = w; }
+  }
+  return best;
 }
 
 function snap(v, grid = 50) { return Math.round(v / grid) * grid; }
@@ -139,6 +188,23 @@ function onPointerDown(e) {
       onStatus('Tap a vertex (small white circle) to merge the two walls meeting there.');
       break;
     }
+    case 'add-wall': {
+      // Two-tap drawing: first tap sets the start, second tap commits the
+      // wall (axis-snapped to the start). The wall is standalone and does not
+      // need to connect to a room.
+      if (!wallStart) {
+        wallStart = sp;
+        onStatus('First corner placed. Tap the other end to confirm.');
+        showPreviewFreeWall(wallStart, wallStart);
+        return;
+      }
+      const end = snapToAxis(wallStart, sp);
+      const w = addFreeWall(wallStart, end, 'internal');
+      wallStart = null;
+      showPreviewFreeWall(null, null);
+      if (w) onStatus('Wall added.');
+      return;
+    }
     case 'delete': {
       const target = e.target;
       if (target && target.dataset) {
@@ -157,6 +223,18 @@ function onPointerDown(e) {
           onStatus('Removed no-go zone.');
           break;
         }
+        if (target.dataset.freeWallId) {
+          deleteFreeWall(target.dataset.freeWallId);
+          onStatus('Removed wall.');
+          break;
+        }
+      }
+      // Fall back to nearest free wall within tap tolerance, then to a room.
+      const nearestFree = nearestFreeWall(wp, 400);
+      if (nearestFree) {
+        deleteFreeWall(nearestFree.id);
+        onStatus('Removed wall.');
+        break;
       }
       const room = roomAt(wp);
       if (room) {
@@ -202,6 +280,12 @@ function onPointerMove(e) {
   if (state.mode === 'draw-custom' && customVerts && customVerts.length > 0) {
     const cur = snapToAxis(customVerts[customVerts.length - 1], { x: snap(wp.x), y: snap(wp.y) });
     showPreviewPolygon(customVerts, cur);
+  }
+  // Live preview while drawing a free wall: dashed line from the first tap
+  // to the snapped cursor, with the live length label.
+  if (state.mode === 'add-wall' && wallStart) {
+    const cur = snapToAxis(wallStart, { x: snap(wp.x), y: snap(wp.y) });
+    showPreviewFreeWall(wallStart, cur);
   }
   if (!dragStart) return;
   dragEnd = { x: snap(wp.x), y: snap(wp.y) };

@@ -22,6 +22,10 @@ export const state = {
     wastageFactor: 1.08,
   },
   rooms: [],
+  // Standalone walls — line segments that aren't part of any room polygon.
+  // Use them for partition walls, partial structures, or anything where you
+  // want to draw a wall without committing to a closed shape.
+  walls: [],
   manifold: null,
   loops: [],
   warnings: [],
@@ -45,6 +49,7 @@ const history = [];
 function snapshot() {
   return {
     rooms: structuredClone(state.rooms),
+    walls: structuredClone(state.walls || []),
     manifold: state.manifold ? { ...state.manifold } : null,
     tracingImage: state.tracingImage ? { ...state.tracingImage } : null,
   };
@@ -61,6 +66,7 @@ export function undo() {
   if (history.length === 0) return false;
   const last = history.pop();
   state.rooms = last.rooms;
+  state.walls = last.walls || [];
   state.manifold = last.manifold;
   state.tracingImage = last.tracingImage;
   state.loops = [];
@@ -236,6 +242,43 @@ export function setManifold(point) {
   emit();
 }
 
+// Standalone (room-independent) walls. `kind` is 'external' or 'internal' and
+// follows the same rendering convention as polygon edges.
+export function addFreeWall(a, b, kind = 'internal') {
+  if (!a || !b) return null;
+  // Ignore zero-length walls.
+  if (Math.hypot(b.x - a.x, b.y - a.y) < 1) return null;
+  pushUndo();
+  if (!Array.isArray(state.walls)) state.walls = [];
+  const w = {
+    id: newId('wall'),
+    a: { x: Math.round(a.x), y: Math.round(a.y) },
+    b: { x: Math.round(b.x), y: Math.round(b.y) },
+    kind,
+  };
+  state.walls.push(w);
+  emit();
+  return w;
+}
+
+export function deleteFreeWall(id) {
+  if (!Array.isArray(state.walls)) return;
+  const idx = state.walls.findIndex(w => w.id === id);
+  if (idx < 0) return;
+  pushUndo();
+  state.walls.splice(idx, 1);
+  emit();
+}
+
+export function toggleFreeWallKind(id) {
+  if (!Array.isArray(state.walls)) return;
+  const w = state.walls.find(w => w.id === id);
+  if (!w) return;
+  pushUndo();
+  w.kind = w.kind === 'external' ? 'internal' : 'external';
+  emit();
+}
+
 // Tracing image actions. The image is stored as a data URL so it persists in
 // memory across edits but is not written to localStorage (data URLs of typical
 // floor-plan photos can exceed the 5 MB localStorage cap).
@@ -291,6 +334,7 @@ export function clearLoops() {
 export function clearAll() {
   pushUndo();
   state.rooms = [];
+  state.walls = [];
   state.manifold = null;
   state.loops = [];
   state.warnings = [];
@@ -327,6 +371,7 @@ function rectRoom({ name, x, y, w, h, walls, doors = [], noGoZones = [], pattern
 export function loadSample() {
   pushUndo();
   state.rooms = [];
+  state.walls = [];
   state.loops = [];
   state.warnings = [];
   // A modest cottage-style ground floor: kitchen, dining, living, hall, WC.

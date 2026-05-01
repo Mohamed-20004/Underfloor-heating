@@ -13,7 +13,7 @@ export function initRenderer(svgEl) {
   canvas = svgEl;
   // Build persistent layer groups so we can re-render without thrashing.
   canvas.innerHTML = '';
-  for (const name of ['background', 'trace', 'rooms', 'walls', 'nogo', 'pipes', 'tails', 'manifold', 'labels', 'preview', 'title-block']) {
+  for (const name of ['background', 'trace', 'rooms', 'walls', 'free-walls', 'nogo', 'pipes', 'tails', 'manifold', 'labels', 'preview', 'title-block']) {
     const g = document.createElementNS(SVG_NS, 'g');
     g.setAttribute('data-layer', name);
     canvas.appendChild(g);
@@ -78,6 +78,7 @@ export function render() {
   drawBackground();
   drawTracingImage();
   drawRooms();
+  drawFreeWalls();
   drawWalls();
   drawNoGo();
   drawManifold();
@@ -191,6 +192,36 @@ function drawTracingImage() {
     }, layers.trace);
   }
   return el;
+}
+
+function drawFreeWalls() {
+  clear(layers['free-walls']);
+  const walls = state.walls || [];
+  for (const w of walls) {
+    const cls = w.kind === 'external' ? 'wall external' : 'wall internal';
+    svg('line', {
+      x1: w.a.x, y1: w.a.y, x2: w.b.x, y2: w.b.y,
+      class: cls,
+      'data-free-wall-id': w.id,
+    }, layers['free-walls']);
+    // Length label (centred + offset perpendicular).
+    const dx = w.b.x - w.a.x, dy = w.b.y - w.a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 600) continue;
+    const mx = (w.a.x + w.b.x) / 2, my = (w.a.y + w.b.y) / 2;
+    const nx = -dy / len, ny = dx / len;
+    const off = 220;
+    const isVertical = Math.abs(dx) < 1;
+    const tx = mx + nx * off, ty = my + ny * off;
+    const rotation = isVertical ? `rotate(-90 ${tx} ${ty})` : '';
+    svg('text', {
+      x: tx, y: ty + 35,
+      class: 'wall-length',
+      'font-size': 95,
+      'text-anchor': 'middle',
+      transform: rotation,
+    }, layers['free-walls']).textContent = `${(len / 1000).toFixed(2)} m`;
+  }
 }
 
 function drawRooms() {
