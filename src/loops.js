@@ -160,6 +160,13 @@ export function generateLoops(state) {
   for (const group of groups) {
     const primary = group[0];
     const others = group.slice(1);
+    // Transit corridors don't get their own loop — they only host pipes
+    // routed from heated rooms (handled in a later routing stage). Skip
+    // any group whose primary is purely transit.
+    if ((primary.kind || 'heated') === 'transit') {
+      warnings.push({ level: 'warn', message: `${primary.name}: transit corridor — no own loop. Pipes from other zones will route through it.` });
+      continue;
+    }
     if (!primary.doors || primary.doors.length === 0) {
       warnings.push({ level: 'warn', message: `${primary.name}: no door defined — pipe tails will run as straight lines and may cross walls. Use the Door tool.` });
     }

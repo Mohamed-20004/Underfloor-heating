@@ -150,6 +150,11 @@ function addRoomFromVertices(vertices, edgeKinds) {
     pattern: 'serpentine',
     finish: 'tile',
     zoneCount: 1,
+    // Classification (Stage 1 of the routing rework):
+    //   'heated' — gets its own dedicated heating loop (default)
+    //   'transit' — no own loop; pipes from other rooms route through it
+    //   'hybrid' — own loop AND allows transit pipes through it
+    kind: 'heated',
   };
   state.rooms.push(room);
   state.selection = { type: 'room', id: room.id };

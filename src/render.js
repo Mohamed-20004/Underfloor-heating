@@ -347,10 +347,11 @@ function drawRooms() {
   clear(layers.rooms);
   for (const room of state.rooms) {
     const isSelected = state.selection.id === room.id;
+    const kind = room.kind || 'heated';
     const points = (room.vertices || []).map(v => `${v.x},${v.y}`).join(' ');
     svg('polygon', {
       points,
-      class: 'room-rect' + (isSelected ? ' selected' : ''),
+      class: `zone-area kind-${kind}` + (isSelected ? ' selected' : ''),
       'data-room-id': room.id,
     }, layers.rooms);
     // Room label centred on bounding-box midpoint (good enough for axis-
@@ -369,6 +370,17 @@ function drawRooms() {
       class: 'room-area',
       'font-size': areaSize,
     }, layers.rooms).textContent = `${(polygonArea(room.vertices || []) / 1e6).toFixed(1)} m²`;
+    // Kind badge in the top-left corner of the bbox, only for non-heated
+    // zones — heated is the default and doesn't need a badge.
+    if (kind !== 'heated') {
+      const badgeSize = fontSize * 0.4;
+      const label = kind === 'transit' ? 'TRANSIT' : 'HYBRID';
+      svg('text', {
+        x: b.x + 200, y: b.y + badgeSize + 200,
+        class: `zone-badge kind-${kind}`,
+        'font-size': badgeSize,
+      }, layers.rooms).textContent = label;
+    }
   }
 }
 

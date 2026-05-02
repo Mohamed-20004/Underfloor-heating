@@ -223,21 +223,35 @@ body {
 .warnings li.ok { background: #e9f5ed; color: var(--ok); }
 
 /* SVG element styles */
-.room-rect {
+.zone-area {
   /* Pipe coverage zone — a tinted area outlined with a faint dashed line so
      the user can see the zone's extent without it visually competing with
-     real walls (which are drawn separately via the Wall tool). */
-  fill: rgba(29, 111, 196, 0.07);
+     real walls (which are drawn separately via the Wall tool). The fill
+     colour is keyed to the zone's "kind" (heated / transit / hybrid). */
   stroke: #b4bcc8;
   stroke-width: 30;
   stroke-dasharray: 120 80;
 }
-.room-rect.selected {
-  fill: rgba(29, 111, 196, 0.12);
+.zone-area.kind-heated  { fill: rgba(29, 111, 196, 0.07); }
+.zone-area.kind-transit { fill: rgba(196, 122, 29, 0.10); }
+.zone-area.kind-hybrid  { fill: rgba(122, 29, 196, 0.08); }
+
+.zone-area.selected {
   stroke: var(--primary);
   stroke-width: 50;
   stroke-dasharray: 0;
 }
+.zone-area.kind-transit.selected { stroke: var(--warn); }
+.zone-area.kind-hybrid.selected  { stroke: #7a1dc4; }
+
+.zone-badge {
+  font-family: -apple-system, sans-serif;
+  font-weight: 700;
+  letter-spacing: 1px;
+  pointer-events: none;
+}
+.zone-badge.kind-transit { fill: var(--warn); }
+.zone-badge.kind-hybrid  { fill: #7a1dc4; }
 .wall { stroke-linecap: square; }
 .wall.external { stroke: #2c3340; stroke-width: 80; }
 .wall.internal { stroke: #6b7587; stroke-width: 50; stroke-dasharray: 0; }

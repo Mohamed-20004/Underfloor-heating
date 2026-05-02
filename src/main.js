@@ -210,6 +210,7 @@ function zoomBy(factor) {
 
 // Right panel — selected room editor.
 const roomNameEl = $('#room-name');
+const roomKindEl = $('#room-kind');
 const roomPatternEl = $('#room-pattern');
 const roomFinishEl = $('#room-finish');
 const roomZonesEl = $('#room-zones');
@@ -226,6 +227,10 @@ const wallChecks = {
 roomNameEl.addEventListener('input', () => {
   const id = state.selection.id;
   if (id) updateRoom(id, { name: roomNameEl.value.toUpperCase() });
+});
+roomKindEl.addEventListener('change', () => {
+  const id = state.selection.id;
+  if (id) updateRoom(id, { kind: roomKindEl.value });
 });
 roomPatternEl.addEventListener('change', () => {
   const id = state.selection.id;
@@ -346,6 +351,7 @@ function syncRoomPanel() {
   $('#room-form').hidden = !room;
   if (!room) return;
   if (document.activeElement !== roomNameEl) roomNameEl.value = room.name;
+  roomKindEl.value = room.kind || 'heated';
   roomPatternEl.value = room.pattern;
   roomFinishEl.value = room.finish || 'tile';
   if (document.activeElement !== roomZonesEl) roomZonesEl.value = room.zoneCount || 1;

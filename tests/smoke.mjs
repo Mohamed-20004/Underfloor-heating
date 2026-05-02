@@ -157,6 +157,26 @@ addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
 
+console.log('# Transit-corridor zones do not produce a loop');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+const heated = addCustomRoom([
+  { x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 },
+]);
+const transit = addCustomRoom([
+  { x: 5000, y: 0 }, { x: 7000, y: 0 }, { x: 7000, y: 3000 }, { x: 5000, y: 3000 },
+]);
+transit.kind = 'transit';
+setManifold({ x: 0, y: 0 });
+const out = generateLoops(state);
+const heatedLoops = out.loops.filter(l => l.parentRoomName === heated.name);
+const transitLoops = out.loops.filter(l => l.parentRoomName === transit.name);
+assert(heatedLoops.length >= 1, `heated zone produces at least 1 loop (got ${heatedLoops.length})`);
+assert(transitLoops.length === 0, `transit zone produces no loops (got ${transitLoops.length})`);
+assert(out.warnings.some(w => w.message.includes('transit corridor')), 'transit warning emitted');
+
 console.log('# Two rooms merge into one continuous loop when their shared wall is deleted');
 clearAll();
 state.config.pipeSpacing = 200;

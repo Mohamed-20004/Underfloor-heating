@@ -107,10 +107,17 @@
       </section>
 
       <section class="panel" id="room-panel">
-        <h3>Selected Room</h3>
-        <p class="hint" id="room-empty">No room selected.</p>
+        <h3>Selected Zone</h3>
+        <p class="hint" id="room-empty">No zone selected.</p>
         <div id="room-form" hidden>
           <label>Name <input id="room-name" type="text" /></label>
+          <label>Type
+            <select id="room-kind">
+              <option value="heated">Heated room — own loop</option>
+              <option value="transit">Transit corridor — pipes pass through, no own loop</option>
+              <option value="hybrid">Hybrid space — own loop + allows transit</option>
+            </select>
+          </label>
           <label>Pattern
             <select id="room-pattern">
               <option value="serpentine">Serpentine (meander)</option>
