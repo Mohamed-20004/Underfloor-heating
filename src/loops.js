@@ -6,7 +6,7 @@
 import { generateRoomPath } from './patterns.js';
 import { polylineLength, bbox, dist, eps } from './geometry.js';
 import { routeTail } from './doors.js';
-import { buildNavGraph, routeTailViaGraph } from './routing.js';
+import { buildNavGraph, routeTailViaGraph, findEntryDoor } from './routing.js';
 
 // Group rooms that share hidden edges into a single "merged area" so pipes
 // can flow continuously across deleted walls. Two rooms are in the same
@@ -182,8 +182,12 @@ export function generateLoops(state) {
     // Multi-zone splitting only meaningful for single rooms; groups treat the
     // merged area as one zone for now.
     const subs = others.length === 0 ? expandZones(primary) : [{ ...primary, zoneOf: primary.id, zoneIndex: 1, zoneCount: 1, parentRoomId: primary.id }];
+    // Entry point: the position of the doorway the manifold's path enters
+    // through. Passed to the pattern engine so the serpentine starts on
+    // the wall nearest the doorway instead of an arbitrary corner.
+    const entryPoint = findEntryDoor(state, primary, navGraph);
     for (const sub of subs) {
-      const path = generateRoomPath(sub, config, state.walls || [], others);
+      const path = generateRoomPath(sub, config, state.walls || [], others, entryPoint);
       if (!path || path.length < 2) {
         warnings.push({ level: 'warn', message: `${sub.name}: no valid pipe path (zone too small or fully obstructed).` });
         continue;

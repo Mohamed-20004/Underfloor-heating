@@ -156,6 +156,27 @@ addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
 
+console.log('# Stage 4: serpentine starts at the entry doorway side');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+// Heated rectangle 6 m × 4 m. Manifold sits to the EAST through a wall +
+// door at the EAST side. The serpentine should start at the east end of the
+// first row, not the (default) west end.
+const heated2 = addCustomRoom([
+  { x: 0, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 4000 }, { x: 0, y: 4000 },
+]);
+const eastWall = addFreeWall({ x: 6000, y: 0 }, { x: 6000, y: 4000 });
+addFreeWallDoor(eastWall.id, 0.5, 800);
+setManifold({ x: 7000, y: 2000 });
+const out4 = generateLoops(state);
+const heatedLoop = out4.loops[0];
+assert(!!heatedLoop, 'heated loop generated');
+// First pipe point's x-coord should be on the EAST half of the room.
+const firstX = heatedLoop.path[0].x;
+assert(firstX > 3000, `serpentine path[0] starts on east half (got x=${firstX.toFixed(0)})`);
+
 console.log('# Stage 3: tail hugs wall through a transit corridor');
 clearAll();
 state.config.pipeSpacing = 200;

@@ -281,6 +281,21 @@ function routeAroundRect(roomVerts, A, B, setback) {
   return polylineLen(p1) <= polylineLen(p2) ? p1 : p2;
 }
 
+// Find the doorway through which the manifold's path enters `parentRoom`.
+// Returns the door node's world position, or null if there's no graph path.
+// Used by the pattern engine to start the serpentine at the entry doorway
+// rather than an arbitrary corner of the room.
+export function findEntryDoor(state, parentRoom, graph) {
+  if (!state.manifold || !parentRoom) return null;
+  const g = graph || buildNavGraph(state);
+  const pathIds = shortestPath(g, 'manifold', `room-${parentRoom.id}`);
+  if (!pathIds || pathIds.length === 0) return null;
+  const doorNodes = pathIds
+    .map(id => g.nodeById.get(id))
+    .filter(n => n.type === 'door');
+  return doorNodes.length > 0 ? doorNodes[doorNodes.length - 1].pos : null;
+}
+
 // Build a tail polyline from the manifold to `target` (a point inside
 // `parentRoom`, typically the loop's first or last pipe point), routing via
 // the navigation graph. Between consecutive waypoints that share a transit

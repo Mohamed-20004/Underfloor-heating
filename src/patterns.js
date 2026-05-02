@@ -14,14 +14,14 @@ import {
   eps,
 } from './geometry.js';
 
-export function generateRoomPath(room, config, walls = [], mergedWith = []) {
+export function generateRoomPath(room, config, walls = [], mergedWith = [], entryPoint = null) {
   const pattern = room.pattern || 'serpentine';
   // For wall filtering we need to consider the entire merged area's bbox.
   const bboxRooms = [room, ...mergedWith];
   const relevant = filterRelevantWallsForRooms(bboxRooms, walls || []);
   if (pattern === 'bifilar') return generateBifilar(room, config, relevant, mergedWith);
-  if (pattern === 'hybrid') return generateHybrid(room, config, relevant, mergedWith);
-  return generateSerpentine(room, config, relevant, mergedWith);
+  if (pattern === 'hybrid') return generateHybrid(room, config, relevant, mergedWith, entryPoint);
+  return generateSerpentine(room, config, relevant, mergedWith, entryPoint);
 }
 
 function filterRelevantWallsForRooms(rooms, walls) {
@@ -85,7 +85,7 @@ function setbacksForRoom(room, wallSetback) {
 // Serpentine (meander) — works on any axis-aligned polygon.
 // -----------------------------------------------------------------------------
 
-function generateSerpentine(room, config, walls = [], mergedWith = []) {
+function generateSerpentine(room, config, walls = [], mergedWith = [], entryPoint = null) {
   const { wallSetback, edgeSpacing, pipeSpacing, edgeZoneWidth } = config;
   const ext = longestExternalWall(room);
   if (!ext) return [];
@@ -111,25 +111,42 @@ function generateSerpentine(room, config, walls = [], mergedWith = []) {
   const lateralStartInset = horizontalSpine ? sb.w : sb.n;
   const lateralEndInset = horizontalSpine ? sb.e : sb.s;
 
-  // Decide whether to start from the spine side. The first row hugs the spine.
+  // Decide whether to start from the spine side. The first row hugs the spine
+  // by default; if an entry point is given (the doorway the manifold's path
+  // enters through), start from whichever stack side is closer to the entry
+  // so the pipe begins snaking from the wall nearest the doorway.
   const spineMidPos = horizontalSpine
     ? (ext.wall.a.y + ext.wall.b.y) / 2
     : (ext.wall.a.x + ext.wall.b.x) / 2;
   const spineAtMin = Math.abs(spineMidPos - (horizontalSpine ? b.y : b.x)) < Math.abs(spineMidPos - (horizontalSpine ? b.y + b.h : b.x + b.w));
+  let startAtMin = spineAtMin;
+  if (entryPoint) {
+    const entryStackPos = horizontalSpine ? entryPoint.y : entryPoint.x;
+    const stackCentre = (stackMin + stackMax) / 2;
+    startAtMin = entryStackPos < stackCentre;
+  }
 
   // Build the list of row stack positions, tightening spacing in the edge zone.
   const positions = [];
   let off = edgeSpacing / 2;
   const stackLen = stackMax - stackMin;
   while (off < stackLen) {
-    const pos = spineAtMin ? stackMin + off : stackMax - off;
+    const pos = startAtMin ? stackMin + off : stackMax - off;
     positions.push(pos);
     const inEdgeZone = Math.min(off, stackLen - off) < edgeZoneWidth;
     off += inEdgeZone ? edgeSpacing : pipeSpacing;
   }
   if (positions.length === 0) return [];
 
+  // Initial row direction: row 0 normally starts at its low-coord end (best.a).
+  // If the entry doorway sits on the high-coord lateral side, flip the
+  // initial direction so the first point of the pattern is on the entry side.
   let direction = 1;
+  if (entryPoint) {
+    const entryLatPos = horizontalSpine ? entryPoint.x : entryPoint.y;
+    const latCentre = horizontalSpine ? b.cx : b.cy;
+    direction = entryLatPos < latCentre ? 1 : -1;
+  }
   const points = [];
   for (let r = 0; r < positions.length; r++) {
     const pos = positions[r];
@@ -380,6 +397,6 @@ function rectSpiral(rect, startOffset, step) {
 // Hybrid (routed) — serpentine with no-go avoidance (already built in).
 // -----------------------------------------------------------------------------
 
-function generateHybrid(room, config, walls = [], mergedWith = []) {
-  return generateSerpentine(room, config, walls, mergedWith);
+function generateHybrid(room, config, walls = [], mergedWith = [], entryPoint = null) {
+  return generateSerpentine(room, config, walls, mergedWith, entryPoint);
 }
