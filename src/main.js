@@ -195,6 +195,27 @@ $('#btn-zoom-in').addEventListener('click', () => zoomBy(1.25));
 $('#btn-zoom-out').addEventListener('click', () => zoomBy(0.8));
 $('#btn-zoom-fit').addEventListener('click', () => { fitToContent(); render(); });
 
+// Pan nudge buttons. Step is roughly a third of the viewport so each tap
+// noticeably advances the view without skipping past the target.
+$('#btn-pan-left').addEventListener('click', () => panBy(1, 0));
+$('#btn-pan-right').addEventListener('click', () => panBy(-1, 0));
+$('#btn-pan-up').addEventListener('click', () => panBy(0, 1));
+$('#btn-pan-down').addEventListener('click', () => panBy(0, -1));
+
+function panBy(dx, dy) {
+  const rect = canvas.getBoundingClientRect();
+  // dx, dy are unit vectors: (1,0)=left, (-1,0)=right, (0,1)=up, (0,-1)=down.
+  // Pan by ~30% of the viewport in the chosen direction so each tap moves
+  // the canvas a comfortable amount.
+  const stepX = rect.width * 0.3 * dx;
+  const stepY = rect.height * 0.3 * dy;
+  state.view.panX += stepX;
+  state.view.panY += stepY;
+  applyView();
+  render();
+  emit();
+}
+
 function zoomBy(factor) {
   const rect = canvas.getBoundingClientRect();
   const cx = rect.width / 2, cy = rect.height / 2;
