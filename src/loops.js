@@ -230,7 +230,10 @@ function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nex
     return routeTail(manifold, target, parentRoom);
   };
   const flowFull = tailRouter(path[0]);
-  const returnFull = tailRouter(path[path.length - 1]);
+  // Return tail follows the same path back to the manifold but ends at the
+  // loop's last pipe point instead of the first. Same doors, same corridor,
+  // mirrored direction — the way real installer drawings depict flow + return.
+  const returnFull = matchedReturnTail(flowFull, path[path.length - 1]);
   const tailIn = polylineLength(flowFull.points);
   const tailOut = polylineLength(returnFull.points);
   const total = pipeLen + tailIn + tailOut;
@@ -255,7 +258,7 @@ function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nex
   for (const seg of segs) {
     const segPipe = polylineLength(seg);
     const flow = tailRouter(seg[0]);
-    const ret = tailRouter(seg[seg.length - 1]);
+    const ret = matchedReturnTail(flow, seg[seg.length - 1]);
     const tIn = polylineLength(flow.points), tOut = polylineLength(ret.points);
     out.push(buildLoop({
       index: nextIndex(),
@@ -270,6 +273,19 @@ function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nex
     }));
   }
   return out;
+}
+
+// Build the return tail by reusing the flow tail's manifold→entry-door
+// portion and replacing the final segment with the loop's last pipe point.
+// The result is a polyline [manifold, ...same waypoints as flow..., last pipe pt]
+// — flow and return share the same routing, just terminating at opposite ends
+// of the loop. The renderer reverses this to draw the return arrow direction.
+function matchedReturnTail(flow, returnTarget) {
+  if (!flow || !flow.points || flow.points.length < 2) {
+    return { points: [returnTarget], door: flow ? flow.door : null };
+  }
+  const preTarget = flow.points.slice(0, -1);
+  return { points: [...preTarget, returnTarget], door: flow.door };
 }
 
 function buildLoop({ index, sub, parentRoom, manifold, path, flowTailPts, returnTailPts, pipeLen, tailLen }) {

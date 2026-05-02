@@ -156,6 +156,46 @@ addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
 
+console.log('# Stage 3: tail hugs wall through a transit corridor');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+// Manifold room (small utility) on the left, a long transit corridor in the
+// middle, heated kitchen on the right. The path should enter the corridor,
+// hug one of its long walls (not cut diagonally across), and exit into the
+// kitchen.
+const utilityZ = addCustomRoom([
+  { x: 0, y: 1500 }, { x: 2000, y: 1500 }, { x: 2000, y: 2500 }, { x: 0, y: 2500 },
+]);
+const corridorZ = addCustomRoom([
+  { x: 2000, y: 0 }, { x: 8000, y: 0 }, { x: 8000, y: 4000 }, { x: 2000, y: 4000 },
+]);
+corridorZ.kind = 'transit';
+const kitchenZ = addCustomRoom([
+  { x: 8000, y: 1500 }, { x: 11000, y: 1500 }, { x: 11000, y: 2500 }, { x: 8000, y: 2500 },
+]);
+// Walls separating the rooms with doors in each.
+const wL = addFreeWall({ x: 2000, y: 1500 }, { x: 2000, y: 2500 });
+addFreeWallDoor(wL.id, 0.5, 800);
+const wR = addFreeWall({ x: 8000, y: 1500 }, { x: 8000, y: 2500 });
+addFreeWallDoor(wR.id, 0.5, 800);
+setManifold({ x: 1000, y: 2000 });
+const out3 = generateLoops(state);
+const kLoop = out3.loops.find(l => l.parentRoomName === kitchenZ.name);
+assert(!!kLoop, 'kitchen loop generated');
+// Through the corridor, the tail should pass within 200 mm of either the
+// north (y≈100) or south (y≈3900) inset wall — meaning we hug a wall rather
+// than straight-line through y=2000.
+const corridorPoints = kLoop.flowTail.filter(p => p.x > 2000 && p.x < 8000);
+const huggedWall = corridorPoints.some(p => p.y < 300 || p.y > 3700);
+assert(huggedWall, `tail hugs a corridor wall (north or south) — sample y values: ${corridorPoints.map(p => p.y.toFixed(0)).join(', ')}`);
+// And the return tail uses the same path (its non-target points should match
+// flow's non-target points).
+const flowMids = kLoop.flowTail.slice(0, -1).map(p => `${p.x.toFixed(0)},${p.y.toFixed(0)}`);
+const returnMids = [...kLoop.returnTail].reverse().slice(0, -1).map(p => `${p.x.toFixed(0)},${p.y.toFixed(0)}`);
+assert(flowMids.join('|') === returnMids.join('|'), 'return tail mirrors flow path');
+
 console.log('# Manifold tail routes through doorways, not crow-flies');
 clearAll();
 state.config.pipeSpacing = 200;

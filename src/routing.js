@@ -51,8 +51,12 @@ export function buildNavGraph(state) {
   const nodeById = new Map();
   const addNode = n => { nodes.push(n); nodeById.set(n.id, n); return n; };
 
+  // Pre-compute the manifold's containing room so we can store it on the
+  // node — used later when perimeter-routing the manifold→first-door segment.
+  let manifoldRoomId = null;
   if (state.manifold) {
-    addNode({ id: 'manifold', type: 'manifold', pos: state.manifold });
+    manifoldRoomId = roomContainingPoint(state.manifold, state.rooms);
+    addNode({ id: 'manifold', type: 'manifold', pos: state.manifold, roomId: manifoldRoomId });
   }
   for (const r of state.rooms) {
     addNode({
@@ -97,9 +101,8 @@ export function buildNavGraph(state) {
 
   // Manifold ↔ doors / centroid of containing room.
   const manifold = nodeById.get('manifold');
-  let manifoldRoom = null;
   if (manifold) {
-    manifoldRoom = roomContainingPoint(manifold.pos, state.rooms);
+    const manifoldRoom = manifoldRoomId; // computed when adding the node above
     if (manifoldRoom) {
       addEdge('manifold', `room-${manifoldRoom}`, dist(manifold.pos, nodeById.get(`room-${manifoldRoom}`).pos));
     }
@@ -195,11 +198,94 @@ export function shortestPath(graph, fromId, toId) {
   return null;
 }
 
+// Identify a room shared by two graph nodes (manifold or door). Returns its
+// id, or null if there's no overlap.
+function sharedRoomId(a, b) {
+  const aRooms = a.type === 'door' ? [a.roomA, a.roomB].filter(Boolean) : (a.roomId ? [a.roomId] : []);
+  const bRooms = b.type === 'door' ? [b.roomA, b.roomB].filter(Boolean) : (b.roomId ? [b.roomId] : []);
+  for (const r of aRooms) if (bRooms.includes(r)) return r;
+  return null;
+}
+
+// True if the polygon is an axis-aligned 4-vertex rectangle.
+function isAxisAlignedRect(verts) {
+  if (!verts || verts.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = verts[i], b = verts[(i + 1) % 4];
+    const isV = Math.abs(a.x - b.x) < 1;
+    const isH = Math.abs(a.y - b.y) < 1;
+    if (!isV && !isH) return false;
+  }
+  return true;
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function polylineLen(pts) {
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) total += dist(pts[i - 1], pts[i]);
+  return total;
+}
+
+// Wall-hugging route from A to B inside an axis-aligned rectangular room.
+// Both A and B should lie on (or near) the room's perimeter — typically two
+// doorway centres. Returns the full polyline including A and B as endpoints.
+// Falls back to a straight line for non-rectangular rooms or when the
+// inset would collapse.
+function routeAroundRect(roomVerts, A, B, setback) {
+  if (!isAxisAlignedRect(roomVerts)) return [A, B];
+  const xs = roomVerts.map(v => v.x), ys = roomVerts.map(v => v.y);
+  const x1 = Math.min(...xs), y1 = Math.min(...ys);
+  const x2 = Math.max(...xs), y2 = Math.max(...ys);
+  const s = setback;
+  const ix1 = x1 + s, iy1 = y1 + s;
+  const ix2 = x2 - s, iy2 = y2 - s;
+  if (ix2 <= ix1 || iy2 <= iy1) return [A, B];
+
+  const project = (p) => {
+    // Snap p to the inset wall it's closest to.
+    const dN = Math.abs(p.y - y1);
+    const dS = Math.abs(p.y - y2);
+    const dW = Math.abs(p.x - x1);
+    const dE = Math.abs(p.x - x2);
+    const m = Math.min(dN, dS, dW, dE);
+    if (m === dN) return { wall: 'N', pos: { x: clamp(p.x, ix1, ix2), y: iy1 } };
+    if (m === dS) return { wall: 'S', pos: { x: clamp(p.x, ix1, ix2), y: iy2 } };
+    if (m === dW) return { wall: 'W', pos: { x: ix1, y: clamp(p.y, iy1, iy2) } };
+    return { wall: 'E', pos: { x: ix2, y: clamp(p.y, iy1, iy2) } };
+  };
+  const pA = project(A);
+  const pB = project(B);
+
+  if (pA.wall === pB.wall) {
+    return [A, pA.pos, pB.pos, B];
+  }
+  const adjacentCorner = {
+    'N-E': { x: ix2, y: iy1 }, 'E-N': { x: ix2, y: iy1 },
+    'E-S': { x: ix2, y: iy2 }, 'S-E': { x: ix2, y: iy2 },
+    'S-W': { x: ix1, y: iy2 }, 'W-S': { x: ix1, y: iy2 },
+    'W-N': { x: ix1, y: iy1 }, 'N-W': { x: ix1, y: iy1 },
+  };
+  const corner = adjacentCorner[`${pA.wall}-${pB.wall}`];
+  if (corner) {
+    return [A, pA.pos, corner, pB.pos, B];
+  }
+  // Opposite walls: two corners. Compute both options and pick shorter.
+  const NW = { x: ix1, y: iy1 }, NE = { x: ix2, y: iy1 };
+  const SE = { x: ix2, y: iy2 }, SW = { x: ix1, y: iy2 };
+  let p1, p2;
+  if (pA.wall === 'N' && pB.wall === 'S') { p1 = [A, pA.pos, NE, SE, pB.pos, B]; p2 = [A, pA.pos, NW, SW, pB.pos, B]; }
+  else if (pA.wall === 'S' && pB.wall === 'N') { p1 = [A, pA.pos, SE, NE, pB.pos, B]; p2 = [A, pA.pos, SW, NW, pB.pos, B]; }
+  else if (pA.wall === 'E' && pB.wall === 'W') { p1 = [A, pA.pos, NE, NW, pB.pos, B]; p2 = [A, pA.pos, SE, SW, pB.pos, B]; }
+  else { p1 = [A, pA.pos, NW, NE, pB.pos, B]; p2 = [A, pA.pos, SW, SE, pB.pos, B]; }
+  return polylineLen(p1) <= polylineLen(p2) ? p1 : p2;
+}
+
 // Build a tail polyline from the manifold to `target` (a point inside
 // `parentRoom`, typically the loop's first or last pipe point), routing via
-// the navigation graph. The polyline is:
-//   [manifold.pos, door1.pos, door2.pos, ..., target]
-// If no graph path is found, falls back to a straight line.
+// the navigation graph. Between consecutive waypoints that share a transit
+// or hybrid room, the segment is routed along that room's perimeter rather
+// than cut diagonally — keeps tails neatly along walls.
 export function routeTailViaGraph(state, parentRoom, target, graph) {
   if (!state.manifold || !parentRoom) return { points: [target], door: null };
   const g = graph || buildNavGraph(state);
@@ -207,13 +293,31 @@ export function routeTailViaGraph(state, parentRoom, target, graph) {
   if (!pathIds || pathIds.length === 0) {
     return { points: [state.manifold, target], door: null };
   }
-  const points = [];
-  for (const id of pathIds) {
-    const n = g.nodeById.get(id);
-    // Only the manifold and door waypoints become physical pipe points; the
-    // room-centroid nodes are routing-graph artefacts and aren't pipe stops.
-    if (n.type === 'manifold' || n.type === 'door') points.push(n.pos);
+  // Extract just the physical waypoints (manifold + door positions); skip
+  // the room-centroid routing artefacts.
+  const waypointNodes = pathIds
+    .map(id => g.nodeById.get(id))
+    .filter(n => n.type === 'manifold' || n.type === 'door');
+
+  const setback = (state.config && state.config.wallSetback) || 200;
+  const points = [waypointNodes[0].pos];
+
+  for (let i = 1; i < waypointNodes.length; i++) {
+    const prev = waypointNodes[i - 1];
+    const curr = waypointNodes[i];
+    const sharedId = sharedRoomId(prev, curr);
+    const sharedRoom = sharedId ? state.rooms.find(r => r.id === sharedId) : null;
+    const kind = sharedRoom && (sharedRoom.kind || 'heated');
+    if (sharedRoom && (kind === 'transit' || kind === 'hybrid')) {
+      const perim = routeAroundRect(sharedRoom.vertices, prev.pos, curr.pos, setback);
+      // perim starts with prev.pos (already in points) — append the rest.
+      for (let k = 1; k < perim.length; k++) points.push(perim[k]);
+    } else {
+      points.push(curr.pos);
+    }
   }
+  // Final hop: last waypoint → target (the loop's first/last pipe point).
+  // This sits inside the heated room; keep it direct.
   points.push(target);
   return { points, door: null };
 }
