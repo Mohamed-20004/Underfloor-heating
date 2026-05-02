@@ -281,6 +281,25 @@ function routeAroundRect(roomVerts, A, B, setback) {
   return polylineLen(p1) <= polylineLen(p2) ? p1 : p2;
 }
 
+// Return the IDs of all transit/hybrid rooms the manifold's shortest path
+// to `parentRoom` traverses. Used by the bundling pass: any two loops
+// passing through the same shared room get distinct slots in that room.
+export function transitRoomsToReach(state, parentRoom, graph) {
+  if (!state.manifold || !parentRoom) return [];
+  const g = graph || buildNavGraph(state);
+  const pathIds = shortestPath(g, 'manifold', `room-${parentRoom.id}`);
+  if (!pathIds) return [];
+  const waypoints = pathIds
+    .map(id => g.nodeById.get(id))
+    .filter(n => n.type === 'manifold' || n.type === 'door');
+  const ids = new Set();
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const sid = sharedRoomId(waypoints[i], waypoints[i + 1]);
+    if (sid && sid !== parentRoom.id) ids.add(sid);
+  }
+  return [...ids];
+}
+
 // Find the doorway through which the manifold's path enters `parentRoom`.
 // Returns the door node's world position, or null if there's no graph path.
 // Used by the pattern engine to start the serpentine at the entry doorway
@@ -301,7 +320,12 @@ export function findEntryDoor(state, parentRoom, graph) {
 // the navigation graph. Between consecutive waypoints that share a transit
 // or hybrid room, the segment is routed along that room's perimeter rather
 // than cut diagonally — keeps tails neatly along walls.
-export function routeTailViaGraph(state, parentRoom, target, graph) {
+//
+// `slotForRoom(roomId)` is an optional callback returning a slot index
+// (0, 1, 2, ...) per shared room. The slot widens the perimeter inset by
+// slot * `bundleSpacing` so multiple loops sharing a corridor render as
+// parallel offset lines (Stage 5 bundling).
+export function routeTailViaGraph(state, parentRoom, target, graph, slotForRoom = null) {
   if (!state.manifold || !parentRoom) return { points: [target], door: null };
   const g = graph || buildNavGraph(state);
   const pathIds = shortestPath(g, 'manifold', `room-${parentRoom.id}`);
@@ -315,6 +339,7 @@ export function routeTailViaGraph(state, parentRoom, target, graph) {
     .filter(n => n.type === 'manifold' || n.type === 'door');
 
   const setback = (state.config && state.config.wallSetback) || 200;
+  const bundleSpacing = (state.config && state.config.bundleSpacing) || 50;
   const points = [waypointNodes[0].pos];
 
   for (let i = 1; i < waypointNodes.length; i++) {
@@ -324,7 +349,9 @@ export function routeTailViaGraph(state, parentRoom, target, graph) {
     const sharedRoom = sharedId ? state.rooms.find(r => r.id === sharedId) : null;
     const kind = sharedRoom && (sharedRoom.kind || 'heated');
     if (sharedRoom && (kind === 'transit' || kind === 'hybrid')) {
-      const perim = routeAroundRect(sharedRoom.vertices, prev.pos, curr.pos, setback);
+      const slot = slotForRoom ? (slotForRoom(sharedRoom.id) || 0) : 0;
+      const effectiveSetback = setback + slot * bundleSpacing;
+      const perim = routeAroundRect(sharedRoom.vertices, prev.pos, curr.pos, effectiveSetback);
       // perim starts with prev.pos (already in points) — append the rest.
       for (let k = 1; k < perim.length; k++) points.push(perim[k]);
     } else {

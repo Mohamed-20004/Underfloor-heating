@@ -6,7 +6,8 @@
 import { generateRoomPath } from './patterns.js';
 import { polylineLength, bbox, dist, eps } from './geometry.js';
 import { routeTail } from './doors.js';
-import { buildNavGraph, routeTailViaGraph, findEntryDoor } from './routing.js';
+import { buildNavGraph, routeTailViaGraph, findEntryDoor,
+  transitRoomsToReach } from './routing.js';
 
 // Group rooms that share hidden edges into a single "merged area" so pipes
 // can flow continuously across deleted walls. Two rooms are in the same
@@ -203,6 +204,11 @@ export function generateLoops(state) {
     }
   }
 
+  // Stage 5 bundling: where multiple loops share a corridor segment, offset
+  // each one by slot * bundleSpacing inside that corridor so they render as
+  // parallel lines instead of overlapping on the same wall path.
+  bundleParallelTails(state, loops, navGraph, config);
+
   // Assign colours (graph 4-colouring on bounding-box adjacency).
   assignColours(loops);
 
@@ -350,6 +356,64 @@ function balanceCheck(loops) {
   }
   const spreadPct = max > 0 ? ((max - min) / max) * 100 : 0;
   return { spreadPct, min, max };
+}
+
+// Stage 5: parallel tail bundling. After all loops are built, walk each
+// loop's manifold→room corridor sequence and assign a slot per loop per
+// corridor (sorted by loop index). Then re-route every loop's tail through
+// the slot-aware router so corridors with multiple loops fan out as
+// parallel offset lines.
+function bundleParallelTails(state, loops, navGraph, config) {
+  if (!state.manifold || loops.length === 0) return;
+  // For each transit/hybrid room, collect the list of loops whose tails
+  // pass through it. Bundling is per-room: any loops sharing a transit
+  // corridor get distinct slots in that room, regardless of which doors
+  // they enter and exit through.
+  const roomLoops = new Map(); // sharedRoomId → [loop.id, ...]
+  for (const loop of loops) {
+    const room = state.rooms.find(r => r.id === loop.roomId);
+    if (!room) continue;
+    const sharedIds = transitRoomsToReach(state, room, navGraph);
+    for (const sid of sharedIds) {
+      if (!roomLoops.has(sid)) roomLoops.set(sid, []);
+      roomLoops.get(sid).push(loop.id);
+    }
+  }
+  // Slot assignment per room — sorted by loop index for stable order.
+  const slotMap = new Map(); // roomId → Map of loop.id → slot
+  for (const [roomId, ids] of roomLoops) {
+    if (ids.length <= 1) continue;
+    const ordered = [...new Set(ids)].sort((a, b) => {
+      const la = loops.find(l => l.id === a), lb = loops.find(l => l.id === b);
+      return (la?.index || 0) - (lb?.index || 0);
+    });
+    const slots = new Map();
+    ordered.forEach((id, i) => slots.set(id, i));
+    slotMap.set(roomId, slots);
+  }
+  if (slotMap.size === 0) return; // nothing shared
+
+  // Re-route every loop's tails with the slot-aware router. We rewrite the
+  // polyline in place; loop length / label are recomputed so they reflect
+  // the new tail routing.
+  for (const loop of loops) {
+    const room = state.rooms.find(r => r.id === loop.roomId);
+    if (!room) continue;
+    const slotFor = (roomId) => slotMap.get(roomId)?.get(loop.id) ?? 0;
+    const target0 = loop.path[0];
+    const targetN = loop.path[loop.path.length - 1];
+    const flow = routeTailViaGraph(state, room, target0, navGraph, slotFor);
+    if (!flow.points || flow.points.length < 2) continue;
+    loop.flowTail = flow.points;
+    const ret = matchedReturnTail(flow, targetN);
+    loop.returnTail = [...ret.points].reverse();
+    const pipeLen = polylineLength(loop.path);
+    const tailLen = polylineLength(flow.points) + polylineLength(ret.points);
+    loop.pipeLength = pipeLen;
+    loop.tailLength = tailLen;
+    loop.totalLength = pipeLen + tailLen;
+    loop.label = `M1-Loop ${String(loop.index).padStart(2, '0')}-${(loop.totalLength / 1000).toFixed(0)}m`;
+  }
 }
 
 // 4-colour assignment with Welsh-Powell ordering: process vertices in

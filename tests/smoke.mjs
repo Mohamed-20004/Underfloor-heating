@@ -156,6 +156,58 @@ addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
 
+console.log('# Stage 5: bundled parallel tails through a shared corridor');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+state.config.bundleSpacing = 50;
+// Layout: utility on the left, a transit corridor running across the top,
+// and two heated rooms BELOW the corridor side-by-side. Both heated rooms
+// have doors on the corridor's south wall, so both flow tails route via
+// the same SW corner and share both the west and south walls of the
+// corridor — the situation Stage 5 should bundle.
+const util3 = addCustomRoom([
+  { x: 0, y: 500 }, { x: 2000, y: 500 }, { x: 2000, y: 1500 }, { x: 0, y: 1500 },
+]);
+const corridor3 = addCustomRoom([
+  { x: 2000, y: 500 }, { x: 8000, y: 500 }, { x: 8000, y: 1500 }, { x: 2000, y: 1500 },
+]);
+corridor3.kind = 'transit';
+const r1 = addCustomRoom([
+  { x: 3000, y: 1500 }, { x: 5000, y: 1500 }, { x: 5000, y: 3500 }, { x: 3000, y: 3500 },
+]);
+const r2 = addCustomRoom([
+  { x: 5000, y: 1500 }, { x: 7000, y: 1500 }, { x: 7000, y: 3500 }, { x: 5000, y: 3500 },
+]);
+const wWest = addFreeWall({ x: 2000, y: 500 }, { x: 2000, y: 1500 });
+addFreeWallDoor(wWest.id, 0.5, 800);
+const wDown1 = addFreeWall({ x: 3000, y: 1500 }, { x: 5000, y: 1500 });
+addFreeWallDoor(wDown1.id, 0.5, 800);
+const wDown2 = addFreeWall({ x: 5000, y: 1500 }, { x: 7000, y: 1500 });
+addFreeWallDoor(wDown2.id, 0.5, 800);
+setManifold({ x: 1000, y: 1000 });
+const out5 = generateLoops(state);
+const lp1 = out5.loops.find(l => l.parentRoomName === r1.name);
+const lp2 = out5.loops.find(l => l.parentRoomName === r2.name);
+assert(!!lp1 && !!lp2, 'both heated rooms produce loops');
+// Both tails should hug the corridor's south wall (the wall closest to the
+// destination doors). Compare the y-coordinate at any corridor-interior
+// point for each loop — they should differ by ~bundleSpacing.
+function southWallY(loop) {
+  // The south-wall hug point has the maximum y among corridor-interior
+  // points (those with x strictly inside the corridor and y inside it too).
+  const interior = loop.flowTail.filter(p =>
+    p.x > 2100 && p.x < 7900 && p.y > 600 && p.y < 1500,
+  );
+  return interior.length ? Math.max(...interior.map(p => p.y)) : null;
+}
+const y1 = southWallY(lp1);
+const y2 = southWallY(lp2);
+assert(y1 !== null && y2 !== null, `both tails enter the corridor (y1=${y1}, y2=${y2})`);
+const d = Math.abs(y1 - y2);
+assert(d > 30 && d < 80, `corridor south-wall y values offset by ~${state.config.bundleSpacing} mm (got |${y1}-${y2}|=${d})`);
+
 console.log('# Stage 4: serpentine starts at the entry doorway side');
 clearAll();
 state.config.pipeSpacing = 200;
