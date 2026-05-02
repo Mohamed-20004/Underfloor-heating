@@ -156,6 +156,29 @@ addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
 
+console.log('# Auto-connect: adjacent zones route via an implicit doorway, no explicit wall/door needed');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+const utilA = addCustomRoom([
+  { x: 0, y: 0 }, { x: 2000, y: 0 }, { x: 2000, y: 3000 }, { x: 0, y: 3000 },
+]);
+const heatA = addCustomRoom([
+  { x: 2000, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 3000 }, { x: 2000, y: 3000 },
+]);
+// No walls drawn between them — they just share the boundary at x=2000.
+setManifold({ x: 1000, y: 1500 });
+const outAuto = generateLoops(state);
+const heatAutoLoop = outAuto.loops.find(l => l.parentRoomName === heatA.name);
+assert(!!heatAutoLoop, 'heated room produces a loop');
+// Tail should pass through the implicit doorway at the midpoint of the
+// shared boundary, around (2000, 1500).
+const passesShared = heatAutoLoop.flowTail.some(p =>
+  Math.abs(p.x - 2000) < 50 && Math.abs(p.y - 1500) < 200,
+);
+assert(passesShared, 'flow tail passes through the implicit doorway at the shared edge midpoint');
+
 console.log('# Stage 5: bundled parallel tails through a shared corridor');
 clearAll();
 state.config.pipeSpacing = 200;

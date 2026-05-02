@@ -36,6 +36,47 @@ function roomContainingPoint(p, rooms) {
   return null;
 }
 
+// Find every collinear overlap between the polygon edges of two rooms. Used
+// to add implicit doorways where zones touch — the routing graph gets one
+// implicit door per overlap, sitting at the overlap's midpoint. Only handles
+// axis-aligned edges (the only kind the editor produces).
+function findSharedZoneEdges(roomA, roomB) {
+  const result = [];
+  const va = roomA.vertices || [];
+  const vb = roomB.vertices || [];
+  const MIN_OVERLAP = 100; // millimetres — ignore hairline contacts
+  for (let i = 0; i < va.length; i++) {
+    const a1 = va[i], a2 = va[(i + 1) % va.length];
+    const aIsH = Math.abs(a1.y - a2.y) < 1;
+    const aIsV = Math.abs(a1.x - a2.x) < 1;
+    if (!aIsH && !aIsV) continue;
+    for (let j = 0; j < vb.length; j++) {
+      const b1 = vb[j], b2 = vb[(j + 1) % vb.length];
+      const bIsH = Math.abs(b1.y - b2.y) < 1;
+      const bIsV = Math.abs(b1.x - b2.x) < 1;
+      if (aIsH !== bIsH) continue; // not parallel
+      if (aIsH) {
+        if (Math.abs(a1.y - b1.y) > 1) continue; // different y, not collinear
+        const aMinX = Math.min(a1.x, a2.x), aMaxX = Math.max(a1.x, a2.x);
+        const bMinX = Math.min(b1.x, b2.x), bMaxX = Math.max(b1.x, b2.x);
+        const lo = Math.max(aMinX, bMinX), hi = Math.min(aMaxX, bMaxX);
+        if (hi - lo >= MIN_OVERLAP) {
+          result.push({ midpoint: { x: (lo + hi) / 2, y: a1.y }, length: hi - lo });
+        }
+      } else if (aIsV) {
+        if (Math.abs(a1.x - b1.x) > 1) continue;
+        const aMinY = Math.min(a1.y, a2.y), aMaxY = Math.max(a1.y, a2.y);
+        const bMinY = Math.min(b1.y, b2.y), bMaxY = Math.max(b1.y, b2.y);
+        const lo = Math.max(aMinY, bMinY), hi = Math.min(aMaxY, bMaxY);
+        if (hi - lo >= MIN_OVERLAP) {
+          result.push({ midpoint: { x: a1.x, y: (lo + hi) / 2 }, length: hi - lo });
+        }
+      }
+    }
+  }
+  return result;
+}
+
 // Bounding-box centre is a good-enough centroid for axis-aligned polygons —
 // for highly concave shapes it can fall outside the polygon, but the graph
 // only uses it as a routing waypoint, not as a real geometry point.
@@ -92,6 +133,28 @@ export function buildNavGraph(state) {
         pos: anchors.center,
         roomA: roomContainingPoint(anchors.sideA, state.rooms),
         roomB: roomContainingPoint(anchors.sideB, state.rooms),
+      });
+    }
+  }
+  // Implicit doorways: any shared boundary between two zone polygons becomes
+  // an open passage at its midpoint. Tails can route through any place where
+  // two zones touch without the user drawing an explicit wall + door — far
+  // less tedious than declaring every internal opening. If the user wants a
+  // boundary to *block* pipes, they draw an actual wall there with the Wall
+  // tool (free walls still act as obstacles via the pattern engine).
+  for (let i = 0; i < state.rooms.length; i++) {
+    for (let j = i + 1; j < state.rooms.length; j++) {
+      const a = state.rooms[i], b = state.rooms[j];
+      const shared = findSharedZoneEdges(a, b);
+      shared.forEach((seg, k) => {
+        addNode({
+          id: `implicit-${a.id}-${b.id}-${k}`,
+          type: 'door',
+          pos: seg.midpoint,
+          roomA: a.id,
+          roomB: b.id,
+          implicit: true,
+        });
       });
     }
   }

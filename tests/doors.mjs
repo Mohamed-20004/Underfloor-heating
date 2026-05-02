@@ -85,10 +85,15 @@ const dB = addFreeWallDoor(wB.id, 0.5, 800);
 setManifold({ x: 1000, y: 1500 });
 const graph = buildNavGraph(state);
 const doorNodes = graph.nodes.filter(n => n.type === 'door');
-assert(doorNodes.length === 1, `graph has 1 door node (got ${doorNodes.length})`);
-const doorNode = doorNodes[0];
-assert(doorNode.roomA === utility.id || doorNode.roomB === utility.id, 'door node is linked to the utility room');
-assert(doorNode.roomA === heated.id || doorNode.roomB === heated.id, 'door node is linked to the heated room');
+// Auto-connect adds an implicit doorway at the shared boundary, plus the
+// explicit door on the wall — so we get two door nodes, both connecting
+// utility ↔ heated.
+assert(doorNodes.length >= 1, `graph has at least one door node (got ${doorNodes.length})`);
+const linksUtilityAndHeated = doorNodes.some(n =>
+  (n.roomA === utility.id || n.roomB === utility.id) &&
+  (n.roomA === heated.id || n.roomB === heated.id),
+);
+assert(linksUtilityAndHeated, 'at least one door node links utility ↔ heated');
 
 console.log('# 5. Two doors on one wall both register as separate nodes');
 reset();
@@ -126,15 +131,19 @@ assert(!!entryPos, 'findEntryDoor returns a position');
 assert(Math.abs(entryPos.x - 2000) < 1 && Math.abs(entryPos.y - 1500) < 1,
   `entry door is at (2000, 1500) — got (${entryPos.x.toFixed(0)}, ${entryPos.y.toFixed(0)})`);
 
-console.log('# 8. Removing the door cuts the heated room off from the manifold');
+console.log('# 8. With non-adjacent rooms, removing the only door cuts the route');
 reset();
+// Rooms separated by a small gap so there's NO shared boundary (no
+// implicit doorway). The wall sits in the gap close enough that its door
+// side anchors fall inside both rooms — so the door IS a viable routing
+// node before deletion. Deleting it removes the only path.
 const u3 = addCustomRoom([
   { x: 0, y: 0 }, { x: 2000, y: 0 }, { x: 2000, y: 3000 }, { x: 0, y: 3000 },
 ]);
 const h3 = addCustomRoom([
-  { x: 2000, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 3000 }, { x: 2000, y: 3000 },
+  { x: 2100, y: 0 }, { x: 5000, y: 0 }, { x: 5000, y: 3000 }, { x: 2100, y: 3000 },
 ]);
-const wIso = addFreeWall({ x: 2000, y: 0 }, { x: 2000, y: 3000 });
+const wIso = addFreeWall({ x: 2050, y: 0 }, { x: 2050, y: 3000 });
 const dIso = addFreeWallDoor(wIso.id, 0.5, 800);
 setManifold({ x: 1000, y: 1500 });
 const beforeOut = generateLoops(state);
@@ -143,10 +152,12 @@ const beforeFlowLen = beforeLoop.flowTail.length;
 deleteFreeWallDoor(wIso.id, dIso.id);
 const afterOut = generateLoops(state);
 const afterLoop = afterOut.loops.find(l => l.parentRoomName === h3.name);
-// Without a door, the graph can't route through; the tail collapses to the
-// straight-line fallback (manifold → first pipe point).
+// With no door and no shared boundary, the graph has no path; the tail
+// falls back to a straight line (2 points: manifold → first pipe point).
+assert(afterLoop.flowTail.length === 2,
+  `flow tail collapses to straight-line fallback when fully isolated (got ${afterLoop.flowTail.length} points)`);
 assert(afterLoop.flowTail.length < beforeFlowLen,
-  `flow tail shorter without door — fell back to straight line (was ${beforeFlowLen}, now ${afterLoop.flowTail.length})`);
+  `tail is shorter after deleting the only door (was ${beforeFlowLen}, now ${afterLoop.flowTail.length})`);
 
 console.log('# 9. Door on a wall between two heated rooms — both rooms route through it');
 reset();
