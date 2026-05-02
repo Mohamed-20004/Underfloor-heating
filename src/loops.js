@@ -6,6 +6,7 @@
 import { generateRoomPath } from './patterns.js';
 import { polylineLength, bbox, dist, eps } from './geometry.js';
 import { routeTail } from './doors.js';
+import { buildNavGraph, routeTailViaGraph } from './routing.js';
 
 // Group rooms that share hidden edges into a single "merged area" so pipes
 // can flow continuously across deleted walls. Two rooms are in the same
@@ -151,6 +152,10 @@ export function generateLoops(state) {
   let loopIndex = 1;
   let nextGroup = 1;
 
+  // Build the navigation graph once for the whole pass — every tail will
+  // route the manifold through doorways instead of cutting across walls.
+  const navGraph = buildNavGraph(state);
+
   // Group rooms connected through hidden walls. Each group is processed once
   // — the primary room generates the path that covers the whole merged area.
   // Other rooms in the group don't generate their own loops (avoid duplicate
@@ -184,7 +189,7 @@ export function generateLoops(state) {
         continue;
       }
       const pipeLen = polylineLength(path);
-      const builtLoops = buildLoopsForPath(path, pipeLen, sub, primary, manifold, config, () => loopIndex++);
+      const builtLoops = buildLoopsForPath(path, pipeLen, sub, primary, manifold, config, () => loopIndex++, state, navGraph);
       const groupNo = nextGroup++;
       for (const l of builtLoops) l.group = groupNo;
       loops.push(...builtLoops);
@@ -212,10 +217,20 @@ export function generateLoops(state) {
 }
 
 // Build one or more loops for a generated path, splitting if the path plus
-// door-routed tails would exceed the maxLoopLength cap.
-function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nextIndex) {
-  const flowFull = routeTail(manifold, path[0], parentRoom);
-  const returnFull = routeTail(manifold, path[path.length - 1], parentRoom);
+// door-routed tails would exceed the maxLoopLength cap. Tails are routed via
+// the navigation graph so the manifold reaches each loop through doorways
+// rather than cutting across walls — falls back to a straight-through-the-
+// nearest-door tail if the graph can't find a path.
+function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nextIndex, state, navGraph) {
+  const tailRouter = (target) => {
+    if (state && navGraph) {
+      const t = routeTailViaGraph(state, parentRoom, target, navGraph);
+      if (t.points && t.points.length >= 2) return t;
+    }
+    return routeTail(manifold, target, parentRoom);
+  };
+  const flowFull = tailRouter(path[0]);
+  const returnFull = tailRouter(path[path.length - 1]);
   const tailIn = polylineLength(flowFull.points);
   const tailOut = polylineLength(returnFull.points);
   const total = pipeLen + tailIn + tailOut;
@@ -239,8 +254,8 @@ function buildLoopsForPath(path, pipeLen, sub, parentRoom, manifold, config, nex
   const out = [];
   for (const seg of segs) {
     const segPipe = polylineLength(seg);
-    const flow = routeTail(manifold, seg[0], parentRoom);
-    const ret = routeTail(manifold, seg[seg.length - 1], parentRoom);
+    const flow = tailRouter(seg[0]);
+    const ret = tailRouter(seg[seg.length - 1]);
     const tIn = polylineLength(flow.points), tOut = polylineLength(ret.points);
     out.push(buildLoop({
       index: nextIndex(),

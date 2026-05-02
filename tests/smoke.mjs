@@ -52,14 +52,13 @@ assert(livingLoops.length >= 2, `LIVING room produces multiple loops via 2-zone 
 const livingGroups = new Set(livingLoops.map(l => l.group));
 assert(livingGroups.size >= 2, `LIVING zones get distinct group numbers (got ${livingGroups.size})`);
 
-console.log('# Door-routed tails');
+console.log('# Door-routed tails (graph routing — variable point count)');
 for (const l of loops) {
-  // With a door defined, a tail should be a 4-point polyline (manifold → outer → inner → first pipe pt).
-  const room = state.rooms.find(r => r.id === l.roomId);
-  if (room && room.doors && room.doors.length > 0) {
-    assert(l.flowTail.length === 4, `${l.label} flow tail routes through door (4 points)`);
-    assert(l.returnTail.length === 4, `${l.label} return tail routes through door (4 points)`);
-  }
+  // After Stage 2, tails route via the navigation graph: at minimum the
+  // polyline starts at the manifold and ends at the loop's first/last
+  // pipe point, with door waypoints in between.
+  assert(l.flowTail.length >= 2, `${l.label} flow tail has manifold→target polyline (got ${l.flowTail.length} points)`);
+  assert(l.returnTail.length >= 2, `${l.label} return tail has manifold→target polyline (got ${l.returnTail.length} points)`);
 }
 
 console.log('# Adjacent loops differ in colour (truly overlapping bboxes)');
@@ -156,6 +155,36 @@ assert(lenWithWall < lenBaseline, `path is shorter once a wall blocks rows (${(l
 addFreeWallDoor(w.id, 0.5, 1200);
 const lenWithDoor = polylineLength(generateRoomPath(room, state.config, state.walls));
 assert(lenWithDoor > lenWithWall, `door restores some pipe through the wall (${(lenWithWall/1000).toFixed(1)} m → ${(lenWithDoor/1000).toFixed(1)} m)`);
+
+console.log('# Manifold tail routes through doorways, not crow-flies');
+clearAll();
+state.config.pipeSpacing = 200;
+state.config.edgeSpacing = 100;
+state.config.wallSetback = 100;
+// Two zones side-by-side: a small "utility" on the left containing the
+// manifold, and a heated "kitchen" on the right. A wall sits between them
+// with a door at its centre. The kitchen's tail must route via that door,
+// not draw a straight line from the manifold across the wall.
+const utility = addCustomRoom([
+  { x: 0, y: 0 }, { x: 3000, y: 0 }, { x: 3000, y: 4000 }, { x: 0, y: 4000 },
+]);
+const kitchen = addCustomRoom([
+  { x: 3000, y: 0 }, { x: 8000, y: 0 }, { x: 8000, y: 4000 }, { x: 3000, y: 4000 },
+]);
+// Wall along the shared boundary x=3000 with a door in the middle.
+const wall = addFreeWall({ x: 3000, y: 0 }, { x: 3000, y: 4000 });
+addFreeWallDoor(wall.id, 0.5, 900);
+setManifold({ x: 1500, y: 200 }); // inside the utility room near its top wall
+const out2 = generateLoops(state);
+const kitchenLoop = out2.loops.find(l => l.parentRoomName === kitchen.name);
+assert(!!kitchenLoop, 'kitchen loop generated');
+// The flow tail should have at least 3 points: manifold, door, room entry.
+assert(kitchenLoop.flowTail.length >= 3, `flow tail routes through ≥1 door (got ${kitchenLoop.flowTail.length} points)`);
+// One of those points should be near the door centre (3000, 2000).
+const passesNearDoor = kitchenLoop.flowTail.some(p =>
+  Math.abs(p.x - 3000) < 50 && Math.abs(p.y - 2000) < 200,
+);
+assert(passesNearDoor, 'flow tail passes through the door at (3000, 2000)');
 
 console.log('# Transit-corridor zones do not produce a loop');
 clearAll();
